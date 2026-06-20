@@ -1,0 +1,10 @@
+[package]
+name = "vernier-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+nalgebra = "0.35.0"
+num-complex = "0.4.6"
+thiserror = "2.0.18"
