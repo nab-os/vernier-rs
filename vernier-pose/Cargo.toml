@@ -1,0 +1,13 @@
+[package]
+name = "vernier-pose"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vernier-core = { path = "../vernier-core" }
+vernier-detection = { path = "../vernier-detection" }
+vernier-patterns = { path = "../vernier-patterns" }
+ 
+[dev-dependencies]
+approx = "0.5.1"
+vernier-cpu = { path = "../vernier-cpu" }

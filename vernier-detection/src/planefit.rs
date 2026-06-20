@@ -1,0 +1,261 @@
+//! Least-squares phase-plane fitting — where the resolution actually comes from.
+//!
+//! After a single spectral lobe is isolated and inverse-transformed, the
+//! argument of the resulting complex field is the wrapped phase of one pattern
+//! direction. The Vernier method does not read a single value from this: it fits
+//! a *plane* `φ(i, j) = a·i + b·j + c` across the whole (unwrapped) phase map by
+//! least squares (André et al. 2021, §III-A). Three payoffs fall out of the fit:
+//!
+//! - `c` is the high-resolution sub-period phase at the image center (the `i, j`
+//!   here are counted from the center), i.e. `φ_x` / `φ_y` modulo 2π.
+//! - `(a, b)` are the per-pixel phase gradients, which give the spectral peak
+//!   location `(m, n) = (w·a/2π, h·b/2π)` and hence the orientation
+//!   `θ = atan2(b, a)` (+ quadrant).
+//!
+//! Fitting across every pixel is the entire reason the method reaches
+//! 1/1000-pixel resolution: it averages the redundant phase information spread
+//! over the whole image rather than trusting one noisy bin.
+//!
+//! The fit must run on **unwrapped** phase — a plane fit over wrapped values is
+//! corrupted by the 2π discontinuities. This module unwraps row-by-row and
+//! column-wise before fitting; see [`fit_plane`].
+
+use vernier_core::Real;
+
+use crate::unwrap::unwrap_1d;
+
+/// Coefficients of a fitted phase plane `φ(i, j) = a·i + b·j + c`, with `(i, j)`
+/// measured from the image center.
+#[derive(Clone, Copy, Debug)]
+pub struct PhasePlane {
+    /// Phase gradient along the column (x) axis, radians per pixel.
+    pub a: Real,
+    /// Phase gradient along the row (y) axis, radians per pixel.
+    pub b: Real,
+    /// Phase at the image center, radians. This is the high-resolution phase
+    /// `φ` used for sub-period position (modulo 2π).
+    pub c: Real,
+}
+
+impl PhasePlane {
+    /// Orientation implied by the plane gradients, `atan2(b, a)` in `(-π, π]`.
+    ///
+    /// This is the in-image angle of the pattern direction before quadrant
+    /// disambiguation (the `+ q·π/2` term, resolved later from the missing
+    /// corner). Mirrors André et al. 2021, Eq. 3.
+    pub fn orientation(&self) -> Real {
+        self.b.atan2(self.a)
+    }
+
+    /// Spectral peak location `(m, n)` implied by the gradients, given image
+    /// dimensions. `m = w·a/2π`, `n = h·b/2π` (André et al. 2022, Eq. 7).
+    pub fn peak_location(&self, width: usize, height: usize) -> (Real, Real) {
+        use vernier_core::scalar::consts::TAU;
+        (
+            width as Real * self.a / TAU,
+            height as Real * self.b / TAU,
+        )
+    }
+}
+
+/// Fits `φ(i, j) = a·i + b·j + c` to a wrapped phase map by least squares.
+///
+/// Steps:
+/// 1. Unwrap the wrapped phases into a continuous surface (row unwrap to fix
+///    horizontal jumps, then column unwrap of the first column to fix vertical
+///    offset between rows — a simple separable 2D unwrap sufficient for the
+///    near-planar phase of a periodic pattern).
+/// 2. Solve the normal equations for the plane in coordinates centered on the
+///    image, so `c` is the center phase directly.
+///
+/// `wrapped` is row-major, length `width * height`.
+pub fn fit_plane(wrapped: &[Real], width: usize, height: usize) -> PhasePlane {
+    let phase = unwrap_2d(wrapped, width, height);
+    fit_plane_to_unwrapped(&phase, width, height)
+}
+
+/// Separable 2D phase unwrap: unwrap each row, then reconcile rows via the first
+/// column. Returns the unwrapped phase (a continuous surface), which is what the
+/// plane fit needs — and what the megarena decode needs to compute cell indices
+/// `round(φ/2π)` (the wrapped phase, confined to (-π, π], always rounds to 0).
+///
+/// Sufficient for the near-planar phase of a periodic pattern; steep or noisy
+/// phase would want a quality-guided unwrap.
+pub fn unwrap_2d(wrapped: &[Real], width: usize, height: usize) -> Vec<Real> {
+    let mut phase = wrapped.to_vec();
+
+    // Unwrap each row in place.
+    for r in 0..height {
+        let start = r * width;
+        unwrap_1d(&mut phase[start..start + width]);
+    }
+    // Unwrap down the first column, then propagate each row's offset so rows are
+    // mutually consistent.
+    let mut first_col: Vec<Real> = (0..height).map(|r| phase[r * width]).collect();
+    let before: Vec<Real> = first_col.clone();
+    unwrap_1d(&mut first_col);
+    for r in 0..height {
+        let row_shift = first_col[r] - before[r];
+        if row_shift != 0.0 {
+            let start = r * width;
+            for v in &mut phase[start..start + width] {
+                *v += row_shift;
+            }
+        }
+    }
+    phase
+}
+
+/// Fits the plane to an already-unwrapped phase surface.
+fn fit_plane_to_unwrapped(phase: &[Real], width: usize, height: usize) -> PhasePlane {
+    // --- Least-squares plane fit, centered coordinates ---
+    // Coordinates i (col) and j (row) run from -w/2.. and -h/2.., so the fitted
+    // constant `c` is the phase at the image center.
+    let cx = width as Real / 2.0;
+    let cy = height as Real / 2.0;
+
+    // Accumulate normal-equation sums for [a, b, c].
+    let (mut sii, mut sjj, mut sij) = (0.0, 0.0, 0.0);
+    let (mut si, mut sj, mut sn) = (0.0, 0.0, 0.0);
+    let (mut spi, mut spj, mut sp) = (0.0, 0.0, 0.0);
+
+    for r in 0..height {
+        let j = r as Real - cy;
+        for col in 0..width {
+            let i = col as Real - cx;
+            let p = phase[r * width + col];
+            sii += i * i;
+            sjj += j * j;
+            sij += i * j;
+            si += i;
+            sj += j;
+            sn += 1.0;
+            spi += p * i;
+            spj += p * j;
+            sp += p;
+        }
+    }
+
+    // Solve the 3x3 symmetric system:
+    // [sii sij si][a]   [spi]
+    // [sij sjj sj][b] = [spj]
+    // [si  sj  sn][c]   [sp ]
+    let (a, b, c) = solve_3x3(
+        [
+            [sii, sij, si],
+            [sij, sjj, sj],
+            [si, sj, sn],
+        ],
+        [spi, spj, sp],
+    );
+
+    PhasePlane { a, b, c }
+}
+
+/// Fits `φ(i, j) = a·i + b·j + c` to an already-unwrapped phase map using only
+/// the central crop, mirroring C++ `RegressionPlane` with `cropFactor = 0.5`.
+///
+/// `crop_factor` ∈ [0, 1): the fraction of each edge to discard. With 0.5 only
+/// the central quarter of pixels are used; the coordinates are still measured
+/// from the full-image center so `c` is the center phase of the full image.
+pub fn fit_plane_cropped(
+    phase: &[Real],
+    width: usize,
+    height: usize,
+    crop_factor: Real,
+) -> PhasePlane {
+    let col_off = (width as Real * crop_factor / 2.0) as usize;
+    let row_off = (height as Real * crop_factor / 2.0) as usize;
+    let cx = width as Real / 2.0;
+    let cy = height as Real / 2.0;
+
+    let (mut sii, mut sjj, mut sij): (Real, Real, Real) = (0.0, 0.0, 0.0);
+    let (mut si, mut sj, mut sn): (Real, Real, Real) = (0.0, 0.0, 0.0);
+    let (mut spi, mut spj, mut sp): (Real, Real, Real) = (0.0, 0.0, 0.0);
+
+    for r in row_off..height.saturating_sub(row_off) {
+        let j = r as Real - cy;
+        for col in col_off..width.saturating_sub(col_off) {
+            let i = col as Real - cx;
+            let p = phase[r * width + col];
+            sii += i * i;
+            sjj += j * j;
+            sij += i * j;
+            si += i;
+            sj += j;
+            sn += 1.0;
+            spi += p * i;
+            spj += p * j;
+            sp += p;
+        }
+    }
+
+    let (a, b, c) = solve_3x3(
+        [[sii, sij, si], [sij, sjj, sj], [si, sj, sn]],
+        [spi, spj, sp],
+    );
+    PhasePlane { a, b, c }
+}
+
+/// Solves a 3x3 linear system by Cramer's rule. Adequate and clear for a
+/// reference path; the matrix is tiny and well-conditioned for centered image
+/// coordinates.
+fn solve_3x3(m: [[Real; 3]; 3], v: [Real; 3]) -> (Real, Real, Real) {
+    let det = det3(m);
+    let mx = det3([
+        [v[0], m[0][1], m[0][2]],
+        [v[1], m[1][1], m[1][2]],
+        [v[2], m[2][1], m[2][2]],
+    ]);
+    let my = det3([
+        [m[0][0], v[0], m[0][2]],
+        [m[1][0], v[1], m[1][2]],
+        [m[2][0], v[2], m[2][2]],
+    ]);
+    let mz = det3([
+        [m[0][0], m[0][1], v[0]],
+        [m[1][0], m[1][1], v[1]],
+        [m[2][0], m[2][1], v[2]],
+    ]);
+    (mx / det, my / det, mz / det)
+}
+
+fn det3(m: [[Real; 3]; 3]) -> Real {
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vernier_core::scalar::consts::{PI, TAU};
+
+    /// Build a wrapped phase map for a known plane and check we recover it.
+    #[test]
+    fn recovers_a_known_plane() {
+        let (w, h) = (32, 32);
+        let (true_a, true_b, true_c) = (0.30, -0.15, 0.4);
+        let cx = w as Real / 2.0;
+        let cy = h as Real / 2.0;
+
+        let mut wrapped = vec![0.0; w * h];
+        for r in 0..h {
+            for col in 0..w {
+                let i = col as Real - cx;
+                let j = r as Real - cy;
+                let mut p = true_a * i + true_b * j + true_c;
+                // Wrap into (-π, π].
+                p = ((p + PI).rem_euclid(TAU)) - PI;
+                wrapped[r * w + col] = p;
+            }
+        }
+
+        let plane = fit_plane(&wrapped, w, h);
+        assert!((plane.a - true_a).abs() < 1e-3, "a={}", plane.a);
+        assert!((plane.b - true_b).abs() < 1e-3, "b={}", plane.b);
+        // c recovered modulo 2π.
+        let dc = ((plane.c - true_c + PI).rem_euclid(TAU)) - PI;
+        assert!(dc.abs() < 1e-3, "c off by {dc}");
+    }
+}
