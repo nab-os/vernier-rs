@@ -180,13 +180,48 @@ fn extract_axis_bits(
         .map(|(&k, &(s, n))| (k, if n > 0 { s / n as Real } else { 0.0 }))
         .collect();
 
-    // Group cells into triples; a triple needs all three members present.
+    // Detect coding alignment: coding periods (partially absent, bit can be 0)
+    // have lower average intensity than always-present outer periods. The
+    // `cell mod 3` class with the lowest mean intensity is the coding slot.
+    // This is needed because the C++ pattern's absolute period numbering may
+    // place the coding slot at a different mod-3 offset than the detected frame.
+    let mut sum3 = [0.0f64; 3];
+    let mut cnt3 = [0usize; 3];
+    for (&cell, &m) in &mean {
+        let w = cell.rem_euclid(3) as usize;
+        sum3[w] += m as f64;
+        cnt3[w] += 1;
+    }
+    let coding_mod = (0usize..3)
+        .filter(|&w| cnt3[w] > 0)
+        .min_by(|&a, &b| {
+            let ma = sum3[a] / cnt3[a] as f64;
+            let mb = sum3[b] / cnt3[b] as f64;
+            ma.partial_cmp(&mb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(1);
+    // Shift so that coding cells land at within=1 (the standard "central" slot).
+    let shift = (1i64 - coding_mod as i64).rem_euclid(3);
+
+    // Group cells into triples using the corrected alignment.
     let mut triples: BTreeMap<i64, [Option<Real>; 3]> = BTreeMap::new();
     for (&cell, &m) in &mean {
-        let tr = cell.div_euclid(3);
-        let within = cell.rem_euclid(3) as usize;
+        let sc = cell + shift;
+        let tr = sc.div_euclid(3);
+        let within = sc.rem_euclid(3) as usize;
         triples.entry(tr).or_insert([None; 3])[within] = Some(m);
     }
+
+    // Estimate background from the minimum observed central-period intensity.
+    // Present coding periods have intensity ≈ outer; absent ones are darker.
+    // For clean synthetic images, absent periods are exactly 0; for real images
+    // (JPEG etc.) they sit at a non-zero background due to dot blur / compression.
+    // Using the minimum as a floor and the local outer as the ceiling, the midpoint
+    // threshold cleanly separates absent from present in both cases.
+    let bg_estimate: Real = triples
+        .values()
+        .filter_map(|m| m[1])
+        .fold(Real::INFINITY, Real::min);
 
     let mut bits = BTreeMap::new();
     for (&tr, members) in &triples {
@@ -194,9 +229,9 @@ fn extract_axis_bits(
             (members[0], members[1], members[2])
         {
             let outer = (outer0 + outer2) * 0.5;
-            // Central present (bit 1) if its intensity is well above the
-            // halfway mark to the outer level; absent (bit 0) if near zero.
-            let bit = if central > outer * 0.5 { 1u8 } else { 0u8 };
+            // Midpoint between background floor and the local outer level.
+            let threshold = (bg_estimate + outer) * 0.5;
+            let bit = if central > threshold { 1u8 } else { 0u8 };
             bits.insert(tr, bit);
         }
     }

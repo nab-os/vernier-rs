@@ -39,24 +39,38 @@ impl Lfsr {
     /// taps table). Orders 3..=16 cover every pattern size of interest (a
     /// 12-bit code already yields an 11 cm target at 9 µm period).
     pub fn maximal(order: u32) -> Option<Self> {
-        let taps = primitive_taps(order)?;
-        // Galois LFSR. Start from all-ones state (any nonzero seed works for a
-        // maximal polynomial; it visits all 2^order - 1 nonzero states).
-        let mask = (1u32 << order) - 1;
-        let mut state = mask; // nonzero seed
-        let len = (1u32 << order) - 1;
-        let mut bits = Vec::with_capacity(len as usize);
-        for _ in 0..len {
-            let out = (state & 1) as u8;
-            bits.push(out);
-            // Galois step: shift right; if output bit was 1, XOR taps in.
-            state >>= 1;
-            if out == 1 {
-                state ^= taps;
+        if (4..=12).contains(&order) {
+            // C++ MegarenaBitSequence left-shift Fibonacci LFSR (orders 4-12).
+            // Matches vernier/src/MegarenaBitSequence.cpp::generate() exactly.
+            let code_max = 1u32 << order;
+            let code_count = code_max - 1;
+            let mut bits = Vec::with_capacity(code_count as usize);
+            let mut code = code_count; // initial state: codeCount (all ones)
+            bits.push(1u8); // bit[0] = 1 (hardcoded from all-ones initial state)
+            for _ in 1..code_count {
+                let nb = cpp_next_bit(order, code);
+                code = (code * 2) % code_max + nb as u32;
+                bits.push(nb);
             }
-            state &= mask;
+            Some(Self { order, bits })
+        } else {
+            // Galois LFSR fallback for orders outside the C++ megarena range.
+            let taps = primitive_taps(order)?;
+            let mask = (1u32 << order) - 1;
+            let mut state = mask;
+            let len = (1u32 << order) - 1;
+            let mut bits = Vec::with_capacity(len as usize);
+            for _ in 0..len {
+                let out = (state & 1) as u8;
+                bits.push(out);
+                state >>= 1;
+                if out == 1 {
+                    state ^= taps;
+                }
+                state &= mask;
+            }
+            Some(Self { order, bits })
         }
-        Some(Self { order, bits })
     }
 
     /// The full bit sequence (length `2^order - 1`).
@@ -150,6 +164,24 @@ impl WindowIndex {
             word = (word << 1) | (b & 1) as u32;
         }
         self.map.get(&word).copied()
+    }
+}
+
+/// Feedback bit for the C++ Fibonacci left-shift LFSR at the given order.
+/// Matches vernier/src/MegarenaBitSequence.cpp::nextBit().
+fn cpp_next_bit(order: u32, state: u32) -> u8 {
+    let b = |pos: u32| ((state >> pos) & 1) as u8;
+    match order {
+        4 => b(0) ^ b(3),
+        5 => b(1) ^ b(4),
+        6 => b(0) ^ b(5),
+        7 => b(2) ^ b(6),
+        8 => b(0) ^ b(1) ^ b(6) ^ b(7),
+        9 => b(3) ^ b(8),
+        10 => b(6) ^ b(9),
+        11 => b(1) ^ b(10),
+        12 => b(0) ^ b(1) ^ b(7) ^ b(11),
+        _ => 0,
     }
 }
 

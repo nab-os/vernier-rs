@@ -86,6 +86,23 @@ impl DetectMegarena {
             }
         };
 
+        println!(
+            "  dir1 peak_bin={:?} plane=(a={:.4} b={:.4} c={:.4})",
+            detection.dir1.peak_bin, detection.dir1.plane.a, detection.dir1.plane.b, detection.dir1.plane.c
+        );
+        println!(
+            "  dir2 peak_bin={:?} plane=(a={:.4} b={:.4} c={:.4})",
+            detection.dir2.peak_bin, detection.dir2.plane.a, detection.dir2.plane.b, detection.dir2.plane.c
+        );
+        println!(
+            "  extracted: x_window={:?} (first_triple={})",
+            code.x_window, code.x_first_triple
+        );
+        println!(
+            "  extracted: y_window={:?} (first_triple={})",
+            code.y_window, code.y_first_triple
+        );
+
         let decoder = MegarenaDecoder::new(
             self.code_size,
             code.x_window.clone(),

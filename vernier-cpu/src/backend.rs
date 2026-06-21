@@ -181,7 +181,9 @@ impl ComputeBackend for CpuBackend {
                     continue;
                 }
                 let sfx = signed(fx, w);
-                let in_half = sfx > 0 || (sfx == 0 && sfy > 0);
+                // Same half-plane convention as argmax_magnitude_halfplane:
+                // positive y frequency, or sfx > 0 on the zero-y axis.
+                let in_half = sfy > 0 || (sfy == 0 && sfx > 0);
                 if !in_half {
                     continue;
                 }
