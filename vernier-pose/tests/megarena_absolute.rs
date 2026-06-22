@@ -10,9 +10,9 @@ use vernier_core::buffer::BufferLayout;
 use vernier_core::{Complex32, ComputeBackend};
 use vernier_cpu::CpuBackend;
 use vernier_detection::spectrum::analyze_two;
-use vernier_patterns::megarena::Megarena;
 use vernier_patterns::PatternPose;
-use vernier_pose::absolute::{extract_code, CoarseDecoder, MegarenaDecoder};
+use vernier_patterns::megarena::Megarena;
+use vernier_pose::absolute::{CoarseDecoder, MegarenaDecoder, extract_code};
 
 #[test]
 fn megarena_absolute_roundtrip() {
@@ -49,13 +49,8 @@ fn megarena_absolute_roundtrip() {
         .expect("a full code window should be visible in a 512px/period-12 image");
 
     // Decode: locate each window in the LFSR -> absolute orders.
-    let decoder = MegarenaDecoder::new(
-        order,
-        code.x_window.clone(),
-        code.y_window.clone(),
-        code.k3,
-    )
-    .unwrap();
+    let decoder =
+        MegarenaDecoder::new(order, code.x_window.clone(), code.y_window.clone(), code.k3).unwrap();
     let orders = decoder
         .decode()
         .expect("decoded windows should localize in the LFSR sequence");

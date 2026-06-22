@@ -51,10 +51,7 @@ impl PhasePlane {
     /// dimensions. `m = w·a/2π`, `n = h·b/2π` (André et al. 2022, Eq. 7).
     pub fn peak_location(&self, width: usize, height: usize) -> (Real, Real) {
         use vernier_core::scalar::consts::TAU;
-        (
-            width as Real * self.a / TAU,
-            height as Real * self.b / TAU,
-        )
+        (width as Real * self.a / TAU, height as Real * self.b / TAU)
     }
 }
 
@@ -128,7 +125,12 @@ pub fn unwrap_2d(wrapped: &[Real], width: usize, height: usize) -> Vec<Real> {
 /// `crop_factor` trims a border of `(crop_factor/2) * dimension` pixels on each
 /// side before fitting; coordinates remain centered on the FULL image so `c` is
 /// still the phase at the full-image center. Mirrors C++ `RegressionPlane`.
-pub(crate) fn fit_plane_to_unwrapped(phase: &[Real], width: usize, height: usize, crop_factor: Real) -> PhasePlane {
+pub(crate) fn fit_plane_to_unwrapped(
+    phase: &[Real],
+    width: usize,
+    height: usize,
+    crop_factor: Real,
+) -> PhasePlane {
     // --- Least-squares plane fit, centered coordinates ---
     // Coordinates i (col) and j (row) run from -w/2.. and -h/2.., so the fitted
     // constant `c` is the phase at the image center.
@@ -166,11 +168,7 @@ pub(crate) fn fit_plane_to_unwrapped(phase: &[Real], width: usize, height: usize
     // [sij sjj sj][b] = [spj]
     // [si  sj  sn][c]   [sp ]
     let (a, b, c) = solve_3x3(
-        [
-            [sii, sij, si],
-            [sij, sjj, sj],
-            [si, sj, sn],
-        ],
+        [[sii, sij, si], [sij, sjj, sj], [si, sj, sn]],
         [spi, spj, sp],
     );
 

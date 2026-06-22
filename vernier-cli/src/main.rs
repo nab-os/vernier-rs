@@ -6,21 +6,21 @@
 //! [`BackendTask`](backend_select::BackendTask). Swapping CPU for GPU is the
 //! `--backend` flag; nothing in the library changes.
 
+mod annotate;
 mod args;
 mod backend_select;
 mod commands;
-mod pgm;
 mod imageio;
-mod annotate;
+mod pgm;
 
 use args::{Command, TopLevel};
-use backend_select::{dispatch, BackendKind};
+use backend_select::{BackendKind, dispatch};
+use commands::analyse::Analyse;
 use commands::benchmark::Benchmark;
 use commands::detect::Detect;
+use commands::detect_megarena::DetectMegarena;
 use commands::inspect::Inspect;
 use commands::roundtrip::Roundtrip;
-use commands::analyse::Analyse;
-use commands::detect_megarena::DetectMegarena;
 
 fn main() {
     let top: TopLevel = argh::from_env();
@@ -102,7 +102,10 @@ fn main() {
                         "  stages: 00_pattern, 01_fft_magnitude, 02_bandpass_mask, \
                          03_isolated_lobe, 04_phase_wrapped, 05_phase_unwrapped (.pgm)"
                     );
-                    println!("  view directly, or: convert {}/01_fft_magnitude.pgm fft.png", a.out);
+                    println!(
+                        "  view directly, or: convert {}/01_fft_magnitude.pgm fft.png",
+                        a.out
+                    );
                 }
                 Err(e) => {
                     eprintln!("inspect failed: {e}");

@@ -62,4 +62,3 @@ pub fn save_grayscale_png(
     buf.save(path)
         .map_err(|e| format!("failed to save {}: {e}", path.display()))
 }
-

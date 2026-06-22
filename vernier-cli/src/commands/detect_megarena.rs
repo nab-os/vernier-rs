@@ -75,8 +75,6 @@ impl DetectMegarena {
             self.window,
         )
         .map_err(|e| format!("detection failed: {e:?}"))?;
-        dbg!(detection.clone().dir1);
-        dbg!(detection.clone().dir2);
 
         // Debug overlays: spectrum with detected carriers, image with decoded
         // cells/bits. Generated before the (possibly-failing) decode so you can
@@ -137,13 +135,6 @@ impl DetectMegarena {
             }
         };
 
-        println!(
-            "  x_first_triple={} y_first_triple={}",
-            code.x_first_triple, code.y_first_triple
-        );
-        println!("  x_window={:?}", code.x_window);
-        println!("  y_window={:?}", code.y_window);
-
         let decoder = MegarenaDecoder::new(
             self.code_size,
             code.x_window.clone(),
@@ -167,13 +158,23 @@ impl DetectMegarena {
                 let order = self.code_size as i64;
                 let swap = code.msb1 != code.msb2;
                 let (k_cx, k_cy, c_x, c_y, msb_x, msb_y) = if swap {
-                    (code.y_k_center, code.x_k_center,
-                     detection.dir2.plane.c, detection.dir1.plane.c,
-                     code.msb2, code.msb1)
+                    (
+                        code.y_k_center,
+                        code.x_k_center,
+                        detection.dir2.plane.c,
+                        detection.dir1.plane.c,
+                        code.msb2,
+                        code.msb1,
+                    )
                 } else {
-                    (code.x_k_center, code.y_k_center,
-                     detection.dir1.plane.c, detection.dir2.plane.c,
-                     code.msb1, code.msb2)
+                    (
+                        code.x_k_center,
+                        code.y_k_center,
+                        detection.dir1.plane.c,
+                        detection.dir2.plane.c,
+                        code.msb1,
+                        code.msb2,
+                    )
                 };
                 let c_x_eff = if msb_x { c_x } else { -c_x };
                 let c_y_eff = if msb_y { c_y } else { -c_y };

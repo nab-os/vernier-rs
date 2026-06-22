@@ -21,8 +21,8 @@ use vernier_core::scalar::consts::PI;
 use vernier_core::{Pose, Real};
 use vernier_detection::PhasePlane;
 
-use crate::periodic;
 use crate::Calibration;
+use crate::periodic;
 
 /// Integer orders and quadrant recovered by the coarse decode.
 #[derive(Clone, Copy, Debug)]
@@ -85,7 +85,11 @@ impl CoarseDecoder for MegarenaDecoder {
     fn decode(&self) -> Option<CoarseOrders> {
         let k1 = self.x_index.locate(&self.x_window)? as i64;
         let k2 = self.y_index.locate(&self.y_window)? as i64;
-        Some(CoarseOrders { k1, k2, k3: self.k3 })
+        Some(CoarseOrders {
+            k1,
+            k2,
+            k3: self.k3,
+        })
     }
 }
 
@@ -175,7 +179,7 @@ fn accumulate_cell_pools(
     use vernier_core::scalar::consts::TAU;
 
     let white_r: Real = 0.125; // C++: frac ≤ 1/8 of period, both axes
-    let bg_r: Real = 0.375;    // C++: frac ≥ 3/8 of period, either axis
+    let bg_r: Real = 0.375; // C++: frac ≥ 3/8 of period, either axis
 
     let mut white: BTreeMap<(i64, i64), (Real, u64)> = BTreeMap::new();
     let mut background: BTreeMap<(i64, i64), (Real, u64)> = BTreeMap::new();
@@ -213,12 +217,36 @@ fn accumulate_cell_pools(
 /// Ports the missing-corner derivation in `MegarenaCell::getCodeOrientation`.
 fn missing_from_coding(coding1: i64, coding2: i64, quadrant: u8) -> (i64, i64) {
     let missing1 = match quadrant {
-        0 | 1 => if coding1 == 2 { 1 } else { 2 },
-        _     => if coding1 == 0 { 1 } else { 0 },
+        0 | 1 => {
+            if coding1 == 2 {
+                1
+            } else {
+                2
+            }
+        }
+        _ => {
+            if coding1 == 0 {
+                1
+            } else {
+                0
+            }
+        }
     };
     let missing2 = match quadrant {
-        0 | 2 => if coding2 == 2 { 1 } else { 2 },
-        _     => if coding2 == 0 { 1 } else { 0 },
+        0 | 2 => {
+            if coding2 == 2 {
+                1
+            } else {
+                2
+            }
+        }
+        _ => {
+            if coding2 == 0 {
+                1
+            } else {
+                0
+            }
+        }
     };
     (missing1, missing2)
 }
@@ -260,7 +288,11 @@ fn detect_coding_orientation(pools: &CellPools) -> Option<CodingOrientation> {
                     .flat_map(|i| (0i64..3).map(move |j| (i, j)))
                     .filter(|&(i, j)| i != coding1 && j != coding2)
                     .map(|(i, j)| {
-                        let w = if i == missing1 && j == missing2 { -1.0 } else { 1.0 };
+                        let w = if i == missing1 && j == missing2 {
+                            -1.0
+                        } else {
+                            1.0
+                        };
                         w * global[i as usize][j as usize]
                     })
                     .sum();
@@ -319,9 +351,7 @@ fn decode_axis_bits(
     let (coding_axis, perp_axis): (&BTreeSet<i64>, &BTreeSet<i64>) =
         if axis_x { (&xs, &ys) } else { (&ys, &xs) };
 
-    let cell_at = |a: i64, b: i64| -> (i64, i64) {
-        if axis_x { (a, b) } else { (b, a) }
-    };
+    let cell_at = |a: i64, b: i64| -> (i64, i64) { if axis_x { (a, b) } else { (b, a) } };
 
     let mut bits = BTreeMap::new();
     for &a in coding_axis {
@@ -394,13 +424,29 @@ pub fn decode_bit_maps(
     let (w, h) = (detection.width, detection.height);
     let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, w, h);
     let orient = detect_coding_orientation(&pools).unwrap_or(CodingOrientation {
-        coding1: 1, coding2: 1, missing1: 2, missing2: 2, quadrant: 0,
+        coding1: 1,
+        coding2: 1,
+        missing1: 2,
+        missing2: 2,
+        quadrant: 0,
     });
     (
-        decode_axis_bits(&pools, true,
-            orient.coding1, orient.coding2, orient.missing1, orient.missing2),
-        decode_axis_bits(&pools, false,
-            orient.coding2, orient.coding1, orient.missing2, orient.missing1),
+        decode_axis_bits(
+            &pools,
+            true,
+            orient.coding1,
+            orient.coding2,
+            orient.missing1,
+            orient.missing2,
+        ),
+        decode_axis_bits(
+            &pools,
+            false,
+            orient.coding2,
+            orient.coding1,
+            orient.missing2,
+            orient.missing1,
+        ),
     )
 }
 
@@ -427,10 +473,22 @@ pub fn extract_code(
     let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, w, h);
     let orient = detect_coding_orientation(&pools)?;
 
-    let x_bits = decode_axis_bits(&pools, true,
-        orient.coding1, orient.coding2, orient.missing1, orient.missing2);
-    let y_bits = decode_axis_bits(&pools, false,
-        orient.coding2, orient.coding1, orient.missing2, orient.missing1);
+    let x_bits = decode_axis_bits(
+        &pools,
+        true,
+        orient.coding1,
+        orient.coding2,
+        orient.missing1,
+        orient.missing2,
+    );
+    let y_bits = decode_axis_bits(
+        &pools,
+        false,
+        orient.coding2,
+        orient.coding1,
+        orient.missing2,
+        orient.missing1,
+    );
 
     let lfsr = vernier_patterns::lfsr::Lfsr::maximal(order)?;
     let widx = lfsr.window_index();
@@ -441,11 +499,9 @@ pub fn extract_code(
             if start + n > triples.len() {
                 break;
             }
-            let consecutive =
-                (0..n).all(|j| triples[start + j] == triples[start] + j as i64);
+            let consecutive = (0..n).all(|j| triples[start + j] == triples[start] + j as i64);
             if consecutive {
-                let window: Vec<u8> =
-                    (0..n).map(|j| bits[&(triples[start] + j as i64)]).collect();
+                let window: Vec<u8> = (0..n).map(|j| bits[&(triples[start] + j as i64)]).collect();
                 let all_ones = window.iter().all(|&b| b == 1);
                 if !all_ones && widx.locate(&window).is_some() {
                     return Some((window, triples[start]));
@@ -467,10 +523,10 @@ pub fn extract_code(
     let msb1 = (orient.missing1 + 1).rem_euclid(3) == orient.coding1;
     let msb2 = (orient.missing2 + 1).rem_euclid(3) == orient.coding2;
     let k3 = match (msb1, msb2) {
-        (true,  true)  => 0u8,
-        (true,  false) => 1u8,
+        (true, true) => 0u8,
+        (true, false) => 1u8,
         (false, false) => 2u8,
-        (false, true)  => 3u8,
+        (false, true) => 3u8,
     };
 
     // C++ findCodePosition reverses the code sample for MSB=0 so the
@@ -501,8 +557,15 @@ pub fn extract_code(
     };
 
     Some(ExtractedCode {
-        x_window, y_window, x_first_triple, y_first_triple, k3,
-        msb1, msb2, x_k_center, y_k_center,
+        x_window,
+        y_window,
+        x_first_triple,
+        y_first_triple,
+        k3,
+        msb1,
+        msb2,
+        x_k_center,
+        y_k_center,
     })
 }
 
@@ -543,7 +606,11 @@ mod tests {
     fn assemble_adds_whole_periods_and_quadrant() {
         let calib = Calibration::new(10.0, 32, 32);
         let fine = Pose::new(2.0, 0.0, 0.0);
-        let orders = CoarseOrders { k1: 3, k2: 0, k3: 1 };
+        let orders = CoarseOrders {
+            k1: 3,
+            k2: 0,
+            k3: 1,
+        };
         let abs = assemble(&fine, orders, &calib);
         assert!((abs.x - 32.0).abs() < 1e-6, "x={}", abs.x); // 3*10 + 2
         assert!(abs.y.abs() < 1e-6);
@@ -560,8 +627,16 @@ mod tests {
     #[test]
     fn estimate_returns_none_on_decode_failure() {
         let calib = Calibration::new(10.0, 32, 32);
-        let p1 = PhasePlane { a: 0.5, b: 0.0, c: 0.0 };
-        let p2 = PhasePlane { a: 0.0, b: 0.5, c: 0.0 };
+        let p1 = PhasePlane {
+            a: 0.5,
+            b: 0.0,
+            c: 0.0,
+        };
+        let p2 = PhasePlane {
+            a: 0.0,
+            b: 0.5,
+            c: 0.0,
+        };
         let decoder = FixedDecoder(None);
         assert!(estimate(&p1, &p2, &calib, &decoder).is_none());
     }
@@ -598,14 +673,22 @@ mod tests {
         let yw: Vec<u8> = (0..n).map(|j| lfsr.bit_at(ky + j)).collect();
         let decoder = MegarenaDecoder::new(order, xw, yw, 0).unwrap();
 
-        let p1 = PhasePlane { a: 0.5, b: 0.0, c: 0.0 };
-        let p2 = PhasePlane { a: 0.0, b: 0.5, c: 0.0 };
+        let p1 = PhasePlane {
+            a: 0.5,
+            b: 0.0,
+            c: 0.0,
+        };
+        let p2 = PhasePlane {
+            a: 0.0,
+            b: 0.5,
+            c: 0.0,
+        };
         let mut fine = crate::periodic::estimate(&p1, &p2, &calib);
         fine.x = 2.0;
 
         let abs = assemble(&fine, decoder.decode().unwrap(), &calib);
         assert!((abs.x - 92.0).abs() < 1e-6, "x={}", abs.x); // 10*9 + 2
-        assert!((abs.y - 45.0).abs() < 1e-6, "y={}", abs.y);  // 5*9 + 0
+        assert!((abs.y - 45.0).abs() < 1e-6, "y={}", abs.y); // 5*9 + 0
     }
 
     #[test]

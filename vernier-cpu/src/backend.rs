@@ -137,11 +137,7 @@ impl ComputeBackend for CpuBackend {
         let signed = |f: usize, n: usize| -> isize {
             let f = f as isize;
             let n = n as isize;
-            if f > n / 2 {
-                f - n
-            } else {
-                f
-            }
+            if f > n / 2 { f - n } else { f }
         };
 
         let data = buffer.as_slice();
@@ -188,11 +184,7 @@ impl ComputeBackend for CpuBackend {
         let signed = |f: usize, n: usize| -> isize {
             let f = f as isize;
             let n = n as isize;
-            if f > n / 2 {
-                f - n
-            } else {
-                f
-            }
+            if f > n / 2 { f - n } else { f }
         };
         let ex = signed(exclude_x, w);
         let ey = signed(exclude_y, h);

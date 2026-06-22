@@ -24,10 +24,10 @@
 //! planes are the small summary.
 
 use vernier_core::buffer::Buffer2D;
-use vernier_core::{Complex32, ComputeBackend, Real, Result, VernierError};
 use vernier_core::scalar::consts::{PI, TAU};
+use vernier_core::{Complex32, ComputeBackend, Real, Result, VernierError};
 
-use crate::planefit::{fit_plane_to_unwrapped, PhasePlane};
+use crate::planefit::{PhasePlane, fit_plane_to_unwrapped};
 use crate::unwrap::quarters_unwrap_phase;
 
 /// Result of analyzing one pattern direction.
@@ -269,8 +269,7 @@ fn find_peaks_cpp_style(
     let half_width = (3.0 * sigma).atan2(distance);
 
     // Peak 2: largest magnitude outside the angular cone.
-    let (cx2, cy2) =
-        halfplane_argmax_angular_excl(&mag, width, height, center_angle, half_width)?;
+    let (cx2, cy2) = halfplane_argmax_angular_excl(&mag, width, height, center_angle, half_width)?;
 
     // Order so the larger signed column frequency is direction 1 (C++ convention:
     // swap if mainPeak1.x < mainPeak2.x in the shifted spectrum, equiv. to

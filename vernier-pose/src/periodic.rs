@@ -23,8 +23,8 @@
 //! phase `c`, which averages the redundant phase over the whole image, rather
 //! than one bin's value.
 
-use vernier_core::scalar::consts::TAU;
 use vernier_core::Pose;
+use vernier_core::scalar::consts::TAU;
 use vernier_detection::PhasePlane;
 
 use crate::Calibration;
@@ -61,8 +61,8 @@ pub fn estimate_single(plane: &PhasePlane, calib: &Calibration) -> Pose {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vernier_core::scalar::consts::PI;
     use vernier_core::Real;
+    use vernier_core::scalar::consts::PI;
     use vernier_detection::PhasePlane;
 
     fn plane(a: Real, b: Real, c: Real) -> PhasePlane {
