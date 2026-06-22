@@ -68,10 +68,14 @@ impl PhasePlane {
 /// 2. Solve the normal equations for the plane in coordinates centered on the
 ///    image, so `c` is the center phase directly.
 ///
-/// `wrapped` is row-major, length `width * height`.
-pub fn fit_plane(wrapped: &[Real], width: usize, height: usize) -> PhasePlane {
+/// `wrapped` is row-major, length `width * height`. `crop_factor ∈ [0, 1)`
+/// mirrors the C++ `RegressionPlane::cropFactor` (default 0.5): only the center
+/// `(1 − crop_factor)` fraction of each axis is used in the fit, which avoids
+/// edge artefacts from the bandpass IFFT on real images. Pass `0.0` for no crop
+/// (legacy behaviour, full image).
+pub fn fit_plane(wrapped: &[Real], width: usize, height: usize, crop_factor: Real) -> PhasePlane {
     let phase = unwrap_2d(wrapped, width, height);
-    fit_plane_to_unwrapped(&phase, width, height)
+    fit_plane_to_unwrapped(&phase, width, height, crop_factor)
 }
 
 /// Separable 2D phase unwrap: unwrap each row, then reconcile rows via the first
@@ -81,6 +85,19 @@ pub fn fit_plane(wrapped: &[Real], width: usize, height: usize) -> PhasePlane {
 ///
 /// Sufficient for the near-planar phase of a periodic pattern; steep or noisy
 /// phase would want a quality-guided unwrap.
+///
+/// ## C++ parity note
+///
+/// The C++ library (`Spatial::quartersUnwrapPhase`) propagates outward from the
+/// image center through four quadrants instead of unwrapping row-by-row. On
+/// well-conditioned phase maps the two are equivalent: validated on a real
+/// 856×856 megarena photo, both produce plane gradients identical to ~1e-15
+/// (machine epsilon) with the same fit residual; they differ only in the
+/// absolute offset `c`, which reflects the unwrap origin (a convention, not
+/// accuracy). Quarter-propagation is more robust only when the seed row/column
+/// (row 0, column 0 here) fall on a noisy or occluded region — a degraded-image
+/// case. Kept separable for simplicity; quarter-propagation is a documented
+/// upgrade if heavily degraded inputs become a target.
 pub fn unwrap_2d(wrapped: &[Real], width: usize, height: usize) -> Vec<Real> {
     let mut phase = wrapped.to_vec();
 
@@ -107,21 +124,29 @@ pub fn unwrap_2d(wrapped: &[Real], width: usize, height: usize) -> Vec<Real> {
 }
 
 /// Fits the plane to an already-unwrapped phase surface.
-fn fit_plane_to_unwrapped(phase: &[Real], width: usize, height: usize) -> PhasePlane {
+///
+/// `crop_factor` trims a border of `(crop_factor/2) * dimension` pixels on each
+/// side before fitting; coordinates remain centered on the FULL image so `c` is
+/// still the phase at the full-image center. Mirrors C++ `RegressionPlane`.
+pub(crate) fn fit_plane_to_unwrapped(phase: &[Real], width: usize, height: usize, crop_factor: Real) -> PhasePlane {
     // --- Least-squares plane fit, centered coordinates ---
     // Coordinates i (col) and j (row) run from -w/2.. and -h/2.., so the fitted
     // constant `c` is the phase at the image center.
     let cx = width as Real / 2.0;
     let cy = height as Real / 2.0;
 
+    // C++ RegressionPlane: colOffset = (int)(cols * cropFactor / 2)
+    let col_off = ((width as Real * crop_factor) / 2.0) as usize;
+    let row_off = ((height as Real * crop_factor) / 2.0) as usize;
+
     // Accumulate normal-equation sums for [a, b, c].
     let (mut sii, mut sjj, mut sij) = (0.0, 0.0, 0.0);
     let (mut si, mut sj, mut sn) = (0.0, 0.0, 0.0);
     let (mut spi, mut spj, mut sp) = (0.0, 0.0, 0.0);
 
-    for r in 0..height {
+    for r in row_off..(height - row_off) {
         let j = r as Real - cy;
-        for col in 0..width {
+        for col in col_off..(width - col_off) {
             let i = col as Real - cx;
             let p = phase[r * width + col];
             sii += i * i;
@@ -149,51 +174,6 @@ fn fit_plane_to_unwrapped(phase: &[Real], width: usize, height: usize) -> PhaseP
         [spi, spj, sp],
     );
 
-    PhasePlane { a, b, c }
-}
-
-/// Fits `φ(i, j) = a·i + b·j + c` to an already-unwrapped phase map using only
-/// the central crop, mirroring C++ `RegressionPlane` with `cropFactor = 0.5`.
-///
-/// `crop_factor` ∈ [0, 1): the fraction of each edge to discard. With 0.5 only
-/// the central quarter of pixels are used; the coordinates are still measured
-/// from the full-image center so `c` is the center phase of the full image.
-pub fn fit_plane_cropped(
-    phase: &[Real],
-    width: usize,
-    height: usize,
-    crop_factor: Real,
-) -> PhasePlane {
-    let col_off = (width as Real * crop_factor / 2.0) as usize;
-    let row_off = (height as Real * crop_factor / 2.0) as usize;
-    let cx = width as Real / 2.0;
-    let cy = height as Real / 2.0;
-
-    let (mut sii, mut sjj, mut sij): (Real, Real, Real) = (0.0, 0.0, 0.0);
-    let (mut si, mut sj, mut sn): (Real, Real, Real) = (0.0, 0.0, 0.0);
-    let (mut spi, mut spj, mut sp): (Real, Real, Real) = (0.0, 0.0, 0.0);
-
-    for r in row_off..height.saturating_sub(row_off) {
-        let j = r as Real - cy;
-        for col in col_off..width.saturating_sub(col_off) {
-            let i = col as Real - cx;
-            let p = phase[r * width + col];
-            sii += i * i;
-            sjj += j * j;
-            sij += i * j;
-            si += i;
-            sj += j;
-            sn += 1.0;
-            spi += p * i;
-            spj += p * j;
-            sp += p;
-        }
-    }
-
-    let (a, b, c) = solve_3x3(
-        [[sii, sij, si], [sij, sjj, sj], [si, sj, sn]],
-        [spi, spj, sp],
-    );
     PhasePlane { a, b, c }
 }
 
@@ -251,7 +231,7 @@ mod tests {
             }
         }
 
-        let plane = fit_plane(&wrapped, w, h);
+        let plane = fit_plane(&wrapped, w, h, 0.0);
         assert!((plane.a - true_a).abs() < 1e-3, "a={}", plane.a);
         assert!((plane.b - true_b).abs() < 1e-3, "b={}", plane.b);
         // c recovered modulo 2π.

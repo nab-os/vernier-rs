@@ -22,10 +22,16 @@ use crate::imageio::load_grayscale;
 pub struct Analyse {
     /// Path to the image file to analyse.
     pub image_path: PathBuf,
-    /// Band-pass filter width in bins.
+    /// Band-pass filter width in bins (C++ default 3.0).
     pub sigma: f32,
-    /// Peak-exclusion radius (bins) when finding the second carrier.
-    pub exclude_radius: usize,
+    /// Inner annulus radius for peak search in bins; 0 = no lower limit (C++ default 20).
+    pub min_frequency: usize,
+    /// Outer annulus radius for peak search in bins; 0 = no upper limit (C++ default 500).
+    pub max_frequency: usize,
+    /// Gaussian blur sigma applied to magnitude before peak search (C++ default 0.5).
+    pub smoothing_sigma: f32,
+    /// Apply a Hann window before the FFT (recommended for real images).
+    pub window: bool,
     /// Optional directory to also dump pipeline-stage images into.
     pub stages_dir: Option<PathBuf>,
 }
@@ -36,16 +42,16 @@ impl Analyse {
     /// or shape problems.
     pub fn run(&self) -> Result<(), String> {
         let img = load_grayscale(&self.image_path)?;
-        let (w, h) = (img.width, img.height);
+        let (width, height) = (img.width, img.height);
         println!(
             "loaded {} ({}x{} grayscale)",
             self.image_path.display(),
-            w,
-            h
+            width,
+            height
         );
 
         let backend = CpuBackend::new();
-        let layout = BufferLayout::packed(w, h);
+        let layout = BufferLayout::packed(width, height);
         let complex: Vec<Complex32> = img.data.iter().map(|&v| Complex32::new(v, 0.0)).collect();
         let mut buf = backend
             .upload(&complex, layout)
@@ -55,7 +61,10 @@ impl Analyse {
             &backend,
             &mut buf,
             self.sigma as vernier_core::Real,
-            self.exclude_radius,
+            self.min_frequency,
+            self.max_frequency,
+            self.smoothing_sigma as vernier_core::Real,
+            self.window,
         )
         .map_err(|e| format!("detection failed: {e:?}"))?;
 
@@ -90,7 +99,7 @@ impl Analyse {
 
         // Optionally dump the stage images (the C++ showControlImages analogue).
         if let Some(dir) = &self.stages_dir {
-            self.dump_stages(&img, w, h, dir)?;
+            self.dump_stages(&img, width, height, dir)?;
             println!("control/stage images written to '{}/'", dir.display());
         }
 
@@ -100,17 +109,17 @@ impl Analyse {
     /// Dumps the spectrum + fringe stage images, reusing the inspect machinery
     /// path conceptually. Kept minimal here: writes the input and FFT magnitude
     /// so the user has the "control images" the C++ example shows.
-    fn dump_stages(&self, img: &crate::imageio::LoadedImage, w: usize, h: usize, dir: &Path) -> Result<(), String> {
+    fn dump_stages(&self, img: &crate::imageio::LoadedImage, width: usize, height: usize, dir: &Path) -> Result<(), String> {
         use crate::pgm;
         std::fs::create_dir_all(dir).map_err(|e| format!("mkdir failed: {e}"))?;
 
         let intensities: Vec<f64> = img.data.iter().map(|&v| v as f64).collect();
-        pgm::save_unit(&dir.join("00_input.pgm"), w, h, &intensities)
+        pgm::save_unit(&dir.join("00_input.pgm"), width, height, &intensities)
             .map_err(|e| format!("write failed: {e}"))?;
 
         // Recompute FFT magnitude for the control image.
         let backend = CpuBackend::new();
-        let layout = BufferLayout::packed(w, h);
+        let layout = BufferLayout::packed(width, height);
         let complex: Vec<Complex32> = img.data.iter().map(|&v| Complex32::new(v, 0.0)).collect();
         let mut buf = backend.upload(&complex, layout).unwrap();
         backend.fft2d(&mut buf).unwrap();
@@ -118,9 +127,9 @@ impl Analyse {
         let mag: Vec<f64> = spec.iter().map(|c| (c.norm_sqr() as f64).sqrt()).collect();
         pgm::save_log_magnitude(
             &dir.join("01_fft_magnitude.pgm"),
-            w,
-            h,
-            &pgm::fftshift(w, h, &mag),
+            width,
+            height,
+            &pgm::fftshift(width, height, &mag),
         )
         .map_err(|e| format!("write failed: {e}"))?;
         Ok(())

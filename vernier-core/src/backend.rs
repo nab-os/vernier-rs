@@ -76,6 +76,22 @@ pub trait ComputeBackend {
 
     // --- On-device compute primitives ---------------------------------------
 
+    /// Applies a separable Hann (raised-cosine) window in place, in the spatial
+    /// domain, before the forward FFT.
+    ///
+    /// Tapers the image to zero at its borders, removing the hard edge that
+    /// otherwise smears spectral energy into a cross of leakage across the whole
+    /// spectrum (the bright axes in an un-windowed FFT magnitude). Apodization
+    /// sharpens the carrier lobes, improving both peak localization and the
+    /// phase-plane fit — matching the C++ `Spatial::hannWindow` stage. On a clean
+    /// synthetic pattern the effect is small; on a real photo with edge content
+    /// it is significant.
+    ///
+    /// `window(i,j) = w(i)·w(j)` with `w(k) = 0.5·(1 - cos(2π·k/(N-1)))`. A
+    /// separable per-pixel multiply: a trivial kernel on the GPU, a `map` on the
+    /// CPU. Apply to the real image before [`fft2d`](ComputeBackend::fft2d).
+    fn hann_window(&self, buffer: &mut Self::Buffer2D) -> Result<()>;
+
     /// In-place 2D forward FFT of `buffer`.
     ///
     /// Implementations may require power-of-two dimensions and should return
@@ -124,7 +140,25 @@ pub trait ComputeBackend {
     ///
     /// On the GPU this is the same reduction as `argmax_magnitude` with a
     /// per-bin predicate — still a trivial masked reduction kernel.
-    fn argmax_magnitude_halfplane(&self, buffer: &Self::Buffer2D) -> Result<(usize, Real)>;
+    /// Finds the largest-magnitude bin in the canonical half-plane, **excluding
+    /// a low-frequency disk** of radius `min_radius` bins around DC.
+    ///
+    /// The low-frequency exclusion is essential on real images: lighting falloff,
+    /// vignetting, and overall brightness put enormous energy in the bins
+    /// immediately around DC — often far exceeding the carrier peak. Excluding
+    /// only the single DC bin (the naive approach) makes the search lock onto
+    /// this lighting content (e.g. bin (0,1)) instead of the pattern carrier. A
+    /// `min_radius` that clears the lighting skirt but stays well below the
+    /// carrier radius (the carrier sits at `image_size / period_px` bins)
+    /// recovers the true peak. `min_radius = 0` reduces to DC-only exclusion.
+    ///
+    /// See [`argmax_magnitude_halfplane`](ComputeBackend::argmax_magnitude_halfplane)
+    /// for the half-plane / conjugate-disambiguation rationale.
+    fn argmax_magnitude_halfplane(
+        &self,
+        buffer: &Self::Buffer2D,
+        min_radius: usize,
+    ) -> Result<(usize, Real)>;
 
     /// Like [`argmax_magnitude_halfplane`](ComputeBackend::argmax_magnitude_halfplane),
     /// but ignores bins within `radius` (in signed-frequency bins, Chebyshev
@@ -142,6 +176,7 @@ pub trait ComputeBackend {
         exclude_x: usize,
         exclude_y: usize,
         radius: usize,
+        min_radius: usize,
     ) -> Result<(usize, Real)>;
 
     /// Applies a Gaussian band-pass filter centered on a single frequency lobe,

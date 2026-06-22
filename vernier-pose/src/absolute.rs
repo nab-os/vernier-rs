@@ -53,20 +53,6 @@ pub trait CoarseDecoder {
 /// binary windows already extracted from the two pattern directions, it locates
 /// each window in the LFSR sequence to recover the absolute period orders
 /// `(k1, k2)`, and takes the quadrant `k3` from the orientation disambiguation.
-///
-/// ## The input boundary
-///
-/// This decoder consumes **already-extracted bit windows**, not raw pixels. The
-/// intensity→bits machinery of the paper (§III-B: phase-guided dot/background
-/// classification, thumbnail aggregation, coding-ratio thresholding, global-cell
-/// synchronization for the quadrant) is a substantial image-processing stage
-/// that needs the per-pixel phase maps surfaced from detection. It is kept as a
-/// separate, documented stage (`extract_windows`, below, defines its contract)
-/// so the localization — the part that turns bits into an absolute position, and
-/// the part most easily got wrong — is implemented and tested in isolation.
-///
-/// Each cell encodes one bit per axis via its central period (present = 1).
-/// Reading `order` consecutive cells along each axis yields the two windows.
 pub struct MegarenaDecoder {
     x_index: vernier_patterns::lfsr::WindowIndex,
     y_index: vernier_patterns::lfsr::WindowIndex,
@@ -97,155 +83,339 @@ impl MegarenaDecoder {
 
 impl CoarseDecoder for MegarenaDecoder {
     fn decode(&self) -> Option<CoarseOrders> {
-        // Locate each axis window in its LFSR sequence -> absolute cell order.
         let k1 = self.x_index.locate(&self.x_window)? as i64;
         let k2 = self.y_index.locate(&self.y_window)? as i64;
-        Some(CoarseOrders {
-            k1,
-            k2,
-            k3: self.k3,
-        })
+        Some(CoarseOrders { k1, k2, k3: self.k3 })
     }
 }
 
-/// Extracts the per-direction binary windows from a megarena image, using the
-/// detection phase maps to assign each pixel to a coding cell (André et al.
-/// 2021 §III-B, simplified).
+/// The coding-cell orientation inferred from the thumbnail's 3×3 global cell.
 ///
-/// ## How it works
-///
-/// The fine phase along a direction increases by 2π per pattern period, so
-/// `round(φ/2π)` labels which period (cell) each pixel belongs to — and this is
-/// rotation-invariant, which is why the method works on a tilted pattern without
-/// de-rotating the image. Pixels are grouped by cell, their intensities
-/// averaged, and cells grouped into triples. The megarena encoding makes the
-/// *central* period of each triple present (bit 1) or absent (bit 0); comparing
-/// the central cell's mean intensity to its outer neighbors recovers the bit.
-///
-/// ## Honest simplifications vs the full paper
-///
-/// The paper's full robustness machinery (separate foreground/background phase
-/// masks via |φ| thresholds, thumbnail aggregation, coding-ratio with per-cell
-/// local thresholds, global-cell synchronization for the quadrant) is reduced
-/// here to: cell-mean intensity + central-vs-outer comparison. This is correct
-/// for clean synthetic images (validated to 0 bit errors) but less robust to
-/// occlusion/uneven lighting than the full method. The quadrant `k3` is not yet
-/// recovered from the missing-corner sync — it must be supplied. These are
-/// documented extension points, not hidden gaps.
-///
-/// Returns the bit windows for both directions plus the per-direction cell
-/// ranges, or `None` if too few full triples are visible to form an `order`-bit
-/// window.
-pub struct ExtractedCode {
-    /// Decoded bit window along direction 1 (length = order), MSB = first cell.
-    pub x_window: Vec<u8>,
-    /// Decoded bit window along direction 2.
-    pub y_window: Vec<u8>,
-    /// The starting triple index of the x window (its absolute cell order / 3),
-    /// before LFSR localization — for diagnostics.
-    pub x_first_triple: i64,
-    /// Starting triple index of the y window.
-    pub y_first_triple: i64,
+/// Ports `MegarenaCell::getCodeOrientation` (C++): after folding all white-pool
+/// cells into a 3×3 mean (`globalCell`), the orientation is found by matching
+/// the best-fit template across 36 candidates (3 coding rows × 3 coding cols ×
+/// 4 quadrant placements). The template assigns +1 to always-present cells,
+/// −1 to the missing corner, and 0 to the coding row/column.
+#[derive(Clone, Copy, Debug)]
+pub struct CodingOrientation {
+    /// mod-3 residue of x-direction coding cells (C++ `coding1`).
+    pub coding1: i64,
+    /// mod-3 residue of y-direction coding cells (C++ `coding2`).
+    pub coding2: i64,
+    /// mod-3 residue of the missing-corner x-class (C++ `missing1`).
+    pub missing1: i64,
+    /// mod-3 residue of the missing-corner y-class (C++ `missing2`).
+    pub missing2: i64,
+    /// Winning quadrant index 0..=3 (C++ `quadrant`).
+    pub quadrant: u8,
 }
 
-/// Per-axis bit extraction from one phase map and the image intensities.
+/// Decoded bit windows plus the derived quadrant, ready to build a [`MegarenaDecoder`].
+pub struct ExtractedCode {
+    /// Decoded bit window along direction 1 (length = order), in LFSR-natural
+    /// order (reversed relative to the image scan direction when msb1=false).
+    pub x_window: Vec<u8>,
+    /// Decoded bit window along direction 2 (LFSR-natural order).
+    pub y_window: Vec<u8>,
+    /// The starting triple index of the x window — for diagnostics.
+    pub x_first_triple: i64,
+    /// Starting triple index of the y window — for diagnostics.
+    pub y_first_triple: i64,
+    /// Quadrant derived from the missing-corner MSB rule, 0..=3.
+    pub k3: u8,
+    /// MSB flag for direction 1: true = forward LFSR (missing corner before coding row).
+    pub msb1: bool,
+    /// MSB flag for direction 2.
+    pub msb2: bool,
+    /// LFSR bit index of the image centre along direction 1 (C++ `K_center`).
+    pub x_k_center: i64,
+    /// LFSR bit index of the image centre along direction 2.
+    pub y_k_center: i64,
+}
+
+// ─── Internal types ──────────────────────────────────────────────────────────
+
+struct CellPools {
+    white: std::collections::BTreeMap<(i64, i64), (Real, u64)>,
+    background: std::collections::BTreeMap<(i64, i64), (Real, u64)>,
+}
+
+impl CellPools {
+    fn white_mean(&self, cell: (i64, i64)) -> Option<Real> {
+        self.white
+            .get(&cell)
+            .filter(|&&(_, n)| n > 0)
+            .map(|&(s, n)| s / n as Real)
+    }
+    fn background_mean(&self, cell: (i64, i64)) -> Option<Real> {
+        self.background
+            .get(&cell)
+            .filter(|&&(_, n)| n > 0)
+            .map(|&(s, n)| s / n as Real)
+    }
+}
+
+// ─── Pool accumulation ───────────────────────────────────────────────────────
+
+/// Accumulates white-dot and background intensity pools per 2D cell.
 ///
-/// `phase` and `intensity` are row-major `width*height`. `phase` MUST be the
-/// **unwrapped** phase map of one direction; cell index = `round(phase/2π)`.
-/// Wrapped phase (confined to (-π, π]) would round to 0 everywhere and collapse
-/// all pixels into a single cell. Returns the bit for each fully-observed
-/// triple, keyed by triple index.
-fn extract_axis_bits(
-    phase: &[Real],
+/// Ports `MegarenaThumbnail::computeThumbnail` (C++).
+///
+/// Thresholds match C++: white within Chebyshev radius 0.125 of cell center
+/// (C++ `|fmod(phase,2π)| ≤ π/4` AND both axes), background beyond radius
+/// 0.375 (C++ `|fmod(phase,2π)| ≥ 3π/4` OR either axis).
+fn accumulate_cell_pools(
+    phase_x: &[Real],
+    phase_y: &[Real],
     intensity: &[Real],
     width: usize,
     height: usize,
-) -> std::collections::BTreeMap<i64, u8> {
+) -> CellPools {
     use std::collections::BTreeMap;
     use vernier_core::scalar::consts::TAU;
 
-    // Accumulate intensity sum and count per cell index.
-    let mut sum: BTreeMap<i64, (Real, usize)> = BTreeMap::new();
+    let white_r: Real = 0.125; // C++: frac ≤ 1/8 of period, both axes
+    let bg_r: Real = 0.375;    // C++: frac ≥ 3/8 of period, either axis
+
+    let mut white: BTreeMap<(i64, i64), (Real, u64)> = BTreeMap::new();
+    let mut background: BTreeMap<(i64, i64), (Real, u64)> = BTreeMap::new();
+
     for r in 0..height {
         for c in 0..width {
             let idx = r * width + c;
-            let cell = (phase[idx] / TAU).round() as i64;
-            let e = sum.entry(cell).or_insert((0.0, 0));
-            e.0 += intensity[idx];
-            e.1 += 1;
+            let fx = phase_x[idx] / TAU;
+            let fy = phase_y[idx] / TAU;
+            let cx = fx.round();
+            let cy = fy.round();
+            let rx = (fx - cx).abs();
+            let ry = (fy - cy).abs();
+            let rad = rx.max(ry);
+            let cell = (cx as i64, cy as i64);
+            let v = intensity[idx];
+            if rad < white_r {
+                let e = white.entry(cell).or_insert((0.0, 0));
+                e.0 += v;
+                e.1 += 1;
+            } else if rad > bg_r {
+                let e = background.entry(cell).or_insert((0.0, 0));
+                e.0 += v;
+                e.1 += 1;
+            }
         }
     }
-    let mean: BTreeMap<i64, Real> = sum
-        .iter()
-        .map(|(&k, &(s, n))| (k, if n > 0 { s / n as Real } else { 0.0 }))
-        .collect();
+    CellPools { white, background }
+}
 
-    // Detect coding alignment: coding periods (partially absent, bit can be 0)
-    // have lower average intensity than always-present outer periods. The
-    // `cell mod 3` class with the lowest mean intensity is the coding slot.
-    // This is needed because the C++ pattern's absolute period numbering may
-    // place the coding slot at a different mod-3 offset than the detected frame.
-    let mut sum3 = [0.0f64; 3];
-    let mut cnt3 = [0usize; 3];
-    for (&cell, &m) in &mean {
-        let w = cell.rem_euclid(3) as usize;
-        sum3[w] += m as f64;
-        cnt3[w] += 1;
+// ─── Orientation detection ───────────────────────────────────────────────────
+
+/// Returns `(missing1, missing2)` from `(coding1, coding2, quadrant)`.
+///
+/// Ports the missing-corner derivation in `MegarenaCell::getCodeOrientation`.
+fn missing_from_coding(coding1: i64, coding2: i64, quadrant: u8) -> (i64, i64) {
+    let missing1 = match quadrant {
+        0 | 1 => if coding1 == 2 { 1 } else { 2 },
+        _     => if coding1 == 0 { 1 } else { 0 },
+    };
+    let missing2 = match quadrant {
+        0 | 2 => if coding2 == 2 { 1 } else { 2 },
+        _     => if coding2 == 0 { 1 } else { 0 },
+    };
+    (missing1, missing2)
+}
+
+/// Detects the coding-cell orientation via the 3×3 global-cell template match.
+///
+/// Ports `MegarenaCell::getGlobalCell` + `MegarenaCell::getCodeOrientation`.
+///
+/// Folds all white-pool cells into a 3×3 mean (indexed by `cx%3`, `cy%3`), then
+/// finds the `(coding1, coding2, quadrant)` combination whose template has the
+/// highest inner product with that mean. The template weights: 0 at the coding
+/// row and column, +1 at always-present non-coding positions, −1 at the missing
+/// corner (always absent → negative contribution maximises the score).
+fn detect_coding_orientation(pools: &CellPools) -> Option<CodingOrientation> {
+    let mut sum = [[0.0f64; 3]; 3];
+    let mut cnt = [[0u64; 3]; 3];
+    for (&(cx, cy), &(s, n)) in &pools.white {
+        if n > 0 {
+            let i = cx.rem_euclid(3) as usize;
+            let j = cy.rem_euclid(3) as usize;
+            sum[i][j] += s as f64;
+            cnt[i][j] += n;
+        }
     }
-    let coding_mod = (0usize..3)
-        .filter(|&w| cnt3[w] > 0)
-        .min_by(|&a, &b| {
-            let ma = sum3[a] / cnt3[a] as f64;
-            let mb = sum3[b] / cnt3[b] as f64;
-            ma.partial_cmp(&mb).unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .unwrap_or(1);
-    // Shift so that coding cells land at within=1 (the standard "central" slot).
-    let shift = (1i64 - coding_mod as i64).rem_euclid(3);
+    if cnt.iter().flatten().any(|&c| c == 0) {
+        return None;
+    }
+    let global: [[f64; 3]; 3] =
+        std::array::from_fn(|i| std::array::from_fn(|j| sum[i][j] / cnt[i][j] as f64));
 
-    // Group cells into triples using the corrected alignment.
-    let mut triples: BTreeMap<i64, [Option<Real>; 3]> = BTreeMap::new();
-    for (&cell, &m) in &mean {
-        let sc = cell + shift;
-        let tr = sc.div_euclid(3);
-        let within = sc.rem_euclid(3) as usize;
-        triples.entry(tr).or_insert([None; 3])[within] = Some(m);
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best: Option<CodingOrientation> = None;
+
+    for coding1 in 0i64..3 {
+        for coding2 in 0i64..3 {
+            for quadrant in 0u8..4 {
+                let (missing1, missing2) = missing_from_coding(coding1, coding2, quadrant);
+                let score: f64 = (0i64..3)
+                    .flat_map(|i| (0i64..3).map(move |j| (i, j)))
+                    .filter(|&(i, j)| i != coding1 && j != coding2)
+                    .map(|(i, j)| {
+                        let w = if i == missing1 && j == missing2 { -1.0 } else { 1.0 };
+                        w * global[i as usize][j as usize]
+                    })
+                    .sum();
+                if score > best_score {
+                    best_score = score;
+                    best = Some(CodingOrientation {
+                        coding1,
+                        coding2,
+                        missing1,
+                        missing2,
+                        quadrant,
+                    });
+                }
+            }
+        }
+    }
+    best
+}
+
+// ─── Bit extraction ──────────────────────────────────────────────────────────
+
+/// Decodes the per-triple bit window along one axis.
+///
+/// Ports `MegarenaAbsoluteDecoding::getCodeSequence` / `MegarenaThumbnail::getCodeSequence`.
+///
+/// Inner-loop rules (matching C++ exactly):
+/// - **Background**: accumulated from ALL perpendicular cells.
+/// - **Coding-white**: accumulated only from non-coding perpendicular cells
+///   (`b % 3 != perp_coding_residue`) — excludes the perpendicular coding column
+///   whose dots may be absent.
+/// - **White reference** (adjacent ±1 along the coding axis): also restricted
+///   to non-coding perpendicular cells; the missing-corner cell is excluded.
+///
+/// Bit decision (nearest-reference, threshold-free):
+/// ```text
+/// |coding − background| < |whiteRef − coding|  →  bit 0 (absent)
+/// otherwise                                    →  bit 1 (present)
+/// ```
+fn decode_axis_bits(
+    pools: &CellPools,
+    axis_x: bool,
+    coding_residue: i64,
+    perp_coding_residue: i64,
+    axis_missing: i64,
+    perp_missing: i64,
+) -> std::collections::BTreeMap<i64, u8> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut xs: BTreeSet<i64> = BTreeSet::new();
+    let mut ys: BTreeSet<i64> = BTreeSet::new();
+    for &(cx, cy) in pools.white.keys().chain(pools.background.keys()) {
+        xs.insert(cx);
+        ys.insert(cy);
     }
 
-    // Estimate background from the minimum observed central-period intensity.
-    // Present coding periods have intensity ≈ outer; absent ones are darker.
-    // For clean synthetic images, absent periods are exactly 0; for real images
-    // (JPEG etc.) they sit at a non-zero background due to dot blur / compression.
-    // Using the minimum as a floor and the local outer as the ceiling, the midpoint
-    // threshold cleanly separates absent from present in both cases.
-    let bg_estimate: Real = triples
-        .values()
-        .filter_map(|m| m[1])
-        .fold(Real::INFINITY, Real::min);
+    let (coding_axis, perp_axis): (&BTreeSet<i64>, &BTreeSet<i64>) =
+        if axis_x { (&xs, &ys) } else { (&ys, &xs) };
+
+    let cell_at = |a: i64, b: i64| -> (i64, i64) {
+        if axis_x { (a, b) } else { (b, a) }
+    };
 
     let mut bits = BTreeMap::new();
-    for (&tr, members) in &triples {
-        if let (Some(outer0), Some(central), Some(outer2)) =
-            (members[0], members[1], members[2])
-        {
-            let outer = (outer0 + outer2) * 0.5;
-            // Midpoint between background floor and the local outer level.
-            let threshold = (bg_estimate + outer) * 0.5;
-            let bit = if central > threshold { 1u8 } else { 0u8 };
-            bits.insert(tr, bit);
+    for &a in coding_axis {
+        if a.rem_euclid(3) != coding_residue {
+            continue;
         }
+        let mut coding_s = 0.0;
+        let mut coding_n = 0u64;
+        let mut white_s = 0.0;
+        let mut white_n = 0u64;
+        let mut back_s = 0.0;
+        let mut back_n = 0u64;
+
+        for &b in perp_axis {
+            // Background: all perpendicular positions.
+            if let Some(m) = pools.background_mean(cell_at(a, b)) {
+                back_s += m;
+                back_n += 1;
+            }
+            // Coding-white and white-reference: non-coding perp positions only.
+            if b.rem_euclid(3) != perp_coding_residue {
+                if let Some(m) = pools.white_mean(cell_at(a, b)) {
+                    coding_s += m;
+                    coding_n += 1;
+                }
+                for nb in [a - 1, a + 1] {
+                    // Exclude the missing corner from the white reference.
+                    if nb.rem_euclid(3) != axis_missing || b.rem_euclid(3) != perp_missing {
+                        if let Some(m) = pools.white_mean(cell_at(nb, b)) {
+                            white_s += m;
+                            white_n += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if coding_n == 0 || white_n == 0 || back_n == 0 {
+            continue;
+        }
+        let mean_coding = coding_s / coding_n as Real;
+        let mean_white = white_s / white_n as Real;
+        let mean_back = back_s / back_n as Real;
+
+        let bit = if (mean_coding - mean_back).abs() < (mean_white - mean_coding).abs() {
+            0u8
+        } else {
+            1u8
+        };
+        bits.insert(a.div_euclid(3), bit);
     }
     bits
 }
 
-/// Extracts both direction windows from a full [`Detection`] and image, ready to
-/// build a [`MegarenaDecoder`].
+// ─── Public extraction API ───────────────────────────────────────────────────
+
+/// Decodes the full per-triple bit maps for both directions (diagnostic API).
 ///
-/// `order` is the LFSR order (window length). `intensity` is the original
-/// row-major image (real values). Takes the first `order` consecutive triples
-/// available in each direction. Returns `None` if either direction lacks a full
-/// window. `k3` (quadrant) must be supplied — its recovery from the missing
-/// corner is a documented extension.
+/// Returns `(x_bits, y_bits)`, each mapping triple index → bit, for every
+/// fully-observed coding triple. Useful for debug visualization. Uses the
+/// global-cell orientation detection to find the correct coding residues and
+/// missing corner, matching C++ behavior.
+pub fn decode_bit_maps(
+    detection: &vernier_detection::spectrum::Detection,
+    intensity: &[Real],
+) -> (
+    std::collections::BTreeMap<i64, u8>,
+    std::collections::BTreeMap<i64, u8>,
+) {
+    let (w, h) = (detection.width, detection.height);
+    let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, w, h);
+    let orient = detect_coding_orientation(&pools).unwrap_or(CodingOrientation {
+        coding1: 1, coding2: 1, missing1: 2, missing2: 2, quadrant: 0,
+    });
+    (
+        decode_axis_bits(&pools, true,
+            orient.coding1, orient.coding2, orient.missing1, orient.missing2),
+        decode_axis_bits(&pools, false,
+            orient.coding2, orient.coding1, orient.missing2, orient.missing1),
+    )
+}
+
+/// Extracts both direction windows and the quadrant from an image.
+///
+/// Ports the full C++ extraction pipeline:
+/// 1. Accumulates white-dot / background pools (`computeThumbnail`).
+/// 2. Detects coding orientation via the 3×3 global-cell template match
+///    (`MegarenaCell::getCodeOrientation`).
+/// 3. Extracts per-axis bit windows with perpendicular-column exclusion and
+///    missing-corner guard (`getCodeSequence`).
+/// 4. Derives `k3` from the MSB rule (`computeAbsolutePose` logic).
+///
+/// Returns `None` if orientation detection fails or either direction lacks a
+/// full `order`-bit consecutive window.
 pub fn extract_code(
     detection: &vernier_detection::spectrum::Detection,
     intensity: &[Real],
@@ -254,36 +424,89 @@ pub fn extract_code(
     let n = order as usize;
     let (w, h) = (detection.width, detection.height);
 
-    let xbits = extract_axis_bits(&detection.phase1, intensity, w, h);
-    let ybits = extract_axis_bits(&detection.phase2, intensity, w, h);
+    let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, w, h);
+    let orient = detect_coding_orientation(&pools)?;
 
-    // Take the first `order` consecutive triples in each direction.
+    let x_bits = decode_axis_bits(&pools, true,
+        orient.coding1, orient.coding2, orient.missing1, orient.missing2);
+    let y_bits = decode_axis_bits(&pools, false,
+        orient.coding2, orient.coding1, orient.missing2, orient.missing1);
+
+    let lfsr = vernier_patterns::lfsr::Lfsr::maximal(order)?;
+    let widx = lfsr.window_index();
+
     let take_window = |bits: &std::collections::BTreeMap<i64, u8>| -> Option<(Vec<u8>, i64)> {
         let triples: Vec<i64> = bits.keys().copied().collect();
-        // Find a run of `n` consecutive triple indices.
         for start in 0..triples.len() {
             if start + n > triples.len() {
                 break;
             }
-            let consecutive = (0..n).all(|j| triples[start + j] == triples[start] + j as i64);
+            let consecutive =
+                (0..n).all(|j| triples[start + j] == triples[start] + j as i64);
             if consecutive {
-                let window: Vec<u8> = (0..n).map(|j| bits[&(triples[start] + j as i64)]).collect();
-                return Some((window, triples[start]));
+                let window: Vec<u8> =
+                    (0..n).map(|j| bits[&(triples[start] + j as i64)]).collect();
+                let all_ones = window.iter().all(|&b| b == 1);
+                if !all_ones && widx.locate(&window).is_some() {
+                    return Some((window, triples[start]));
+                }
             }
         }
         None
     };
 
-    let (x_window, x_first_triple) = take_window(&xbits)?;
-    let (y_window, y_first_triple) = take_window(&ybits)?;
+    let (mut x_window, x_first_triple) = take_window(&x_bits)?;
+    let (mut y_window, y_first_triple) = take_window(&y_bits)?;
+
+    // Derive k3 from the MSB rule (C++ computeAbsolutePose):
+    //   MSB_i = ((missing_i + 1) % 3 == coding_i)
+    //   (true,  true)  → no rotation     → k3=0
+    //   (true,  false) → rotate90        → k3=1
+    //   (false, false) → rotate180       → k3=2
+    //   (false, true)  → rotate270       → k3=3
+    let msb1 = (orient.missing1 + 1).rem_euclid(3) == orient.coding1;
+    let msb2 = (orient.missing2 + 1).rem_euclid(3) == orient.coding2;
+    let k3 = match (msb1, msb2) {
+        (true,  true)  => 0u8,
+        (true,  false) => 1u8,
+        (false, false) => 2u8,
+        (false, true)  => 3u8,
+    };
+
+    // C++ findCodePosition reverses the code sample for MSB=0 so the
+    // cross-correlation yields the bitSequence position of the IMAGE CENTRE
+    // regardless of scan direction. We mirror that: for MSB=0, reverse the
+    // window so it is in LFSR-natural (increasing) order, then derive K_center
+    // (LFSR bit at the image centre) from the located position.
+    //
+    // MSB=1 (natural): K(t) = K_center + t  →  k1 = K(first_triple)  →  K_center = k1 − first_triple
+    // MSB=0 (reversed): K(t) = K_center − t →  k1 = K(last_triple)   →  K_center = k1 + last_triple
+    //   where last_triple = first_triple + (n−1)
+    let x_k_center = if msb1 {
+        let k1 = widx.locate(&x_window)? as i64;
+        k1 - x_first_triple
+    } else {
+        x_window.reverse();
+        let k1 = widx.locate(&x_window)? as i64;
+        k1 + x_first_triple + n as i64 - 1
+    };
+
+    let y_k_center = if msb2 {
+        let k1 = widx.locate(&y_window)? as i64;
+        k1 - y_first_triple
+    } else {
+        y_window.reverse();
+        let k1 = widx.locate(&y_window)? as i64;
+        k1 + y_first_triple + n as i64 - 1
+    };
 
     Some(ExtractedCode {
-        x_window,
-        y_window,
-        x_first_triple,
-        y_first_triple,
+        x_window, y_window, x_first_triple, y_first_triple, k3,
+        msb1, msb2, x_k_center, y_k_center,
     })
 }
+
+// ─── Assembly ────────────────────────────────────────────────────────────────
 
 /// Assembles an absolute pose from the fine phase pose and the coarse orders.
 ///
@@ -298,9 +521,6 @@ pub fn assemble(fine: &Pose, orders: CoarseOrders, calib: &Calibration) -> Pose 
 
 /// Full absolute estimate: fine phase pose from the two planes, coarse orders
 /// from the decoder, combined.
-///
-/// Returns `None` if the coarse decode fails — without the orders there is no
-/// absolute position, only the ambiguous fine one.
 pub fn estimate<D: CoarseDecoder>(
     plane1: &PhasePlane,
     plane2: &PhasePlane,
@@ -311,6 +531,8 @@ pub fn estimate<D: CoarseDecoder>(
     let orders = decoder.decode()?;
     Some(assemble(&fine, orders, calib))
 }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -346,9 +568,6 @@ mod tests {
 
     #[test]
     fn megarena_decoder_recovers_known_cell() {
-        // Keystone: build the same LFSR the generator uses, read the central-bit
-        // window at a known cell start, feed it to the decoder, and confirm it
-        // recovers that absolute cell order. This is the bits->position inverse.
         use vernier_patterns::lfsr::Lfsr;
         let order = 8u32;
         let lfsr = Lfsr::maximal(order).unwrap();
@@ -356,7 +575,6 @@ mod tests {
 
         let true_kx = 42usize;
         let true_ky = 17usize;
-        // The generator's central-period presence at triple t is lfsr.bit_at(t).
         let x_window: Vec<u8> = (0..n).map(|j| lfsr.bit_at(true_kx + j)).collect();
         let y_window: Vec<u8> = (0..n).map(|j| lfsr.bit_at(true_ky + j)).collect();
 
@@ -369,28 +587,33 @@ mod tests {
 
     #[test]
     fn megarena_decoder_full_absolute_pose() {
-        // End to end: decoder orders + a fine pose -> absolute pose.
         use vernier_patterns::lfsr::Lfsr;
         let order = 8u32;
         let lfsr = Lfsr::maximal(order).unwrap();
         let n = order as usize;
-        let calib = Calibration::new(9.0, 64, 64); // 9 µm period, as in the paper
+        let calib = Calibration::new(9.0, 64, 64);
 
         let (kx, ky) = (10usize, 5usize);
         let xw: Vec<u8> = (0..n).map(|j| lfsr.bit_at(kx + j)).collect();
         let yw: Vec<u8> = (0..n).map(|j| lfsr.bit_at(ky + j)).collect();
         let decoder = MegarenaDecoder::new(order, xw, yw, 0).unwrap();
 
-        // Fine pose: 2.0 µm into the cell along x, 0 along y.
         let p1 = PhasePlane { a: 0.5, b: 0.0, c: 0.0 };
         let p2 = PhasePlane { a: 0.0, b: 0.5, c: 0.0 };
         let mut fine = crate::periodic::estimate(&p1, &p2, &calib);
-        fine.x = 2.0; // simulate a known sub-period offset
+        fine.x = 2.0;
 
         let abs = assemble(&fine, decoder.decode().unwrap(), &calib);
-        // x = kx*period + 2.0 = 10*9 + 2 = 92.0
-        assert!((abs.x - 92.0).abs() < 1e-6, "x={}", abs.x);
-        // y = ky*period + 0 = 5*9 = 45.0
-        assert!((abs.y - 45.0).abs() < 1e-6, "y={}", abs.y);
+        assert!((abs.x - 92.0).abs() < 1e-6, "x={}", abs.x); // 10*9 + 2
+        assert!((abs.y - 45.0).abs() < 1e-6, "y={}", abs.y);  // 5*9 + 0
+    }
+
+    #[test]
+    fn missing_from_coding_matches_cpp_table() {
+        assert_eq!(missing_from_coding(0, 0, 0), (2, 2));
+        assert_eq!(missing_from_coding(0, 0, 1), (2, 1));
+        assert_eq!(missing_from_coding(0, 0, 2), (1, 2));
+        assert_eq!(missing_from_coding(0, 0, 3), (1, 1));
+        assert_eq!(missing_from_coding(2, 1, 0), (1, 2));
     }
 }

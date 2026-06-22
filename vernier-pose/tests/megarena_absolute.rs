@@ -38,7 +38,8 @@ fn megarena_absolute_roundtrip() {
     let mut buf = backend.upload(&complex, layout).unwrap();
 
     // Two-direction detection -> phase maps for both axes.
-    let detection = analyze_two(&backend, &mut buf, 4.0, 5).unwrap();
+    // sigma=4.0, no annulus limits (synthetic image, no lighting), no blur, no window.
+    let detection = analyze_two(&backend, &mut buf, 4.0, 0, 0, 0.0, false).unwrap();
 
     // Extract the binary code windows from the image intensities + phase maps.
     let intensity: Vec<f32> = image.as_slice().to_vec();
@@ -52,7 +53,7 @@ fn megarena_absolute_roundtrip() {
         order,
         code.x_window.clone(),
         code.y_window.clone(),
-        0, // quadrant supplied (corner-sync recovery is a documented extension)
+        code.k3,
     )
     .unwrap();
     let orders = decoder

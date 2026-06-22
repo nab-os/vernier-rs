@@ -59,6 +59,34 @@ impl ComputeBackend for CpuBackend {
         Ok(buffer.as_slice().to_vec())
     }
 
+    fn hann_window(&self, buffer: &mut Self::Buffer2D) -> Result<()> {
+        let layout = buffer.layout();
+        let (w, h) = (layout.width, layout.height);
+
+        // Precompute the separable 1D Hann factors for each axis.
+        let hann = |k: usize, n: usize| -> f32 {
+            if n <= 1 {
+                return 1.0;
+            }
+            use std::f32::consts::TAU;
+            0.5 * (1.0 - (TAU * k as f32 / (n as f32 - 1.0)).cos())
+        };
+        let wx: Vec<f32> = (0..w).map(|i| hann(i, w)).collect();
+        let wy: Vec<f32> = (0..h).map(|j| hann(j, h)).collect();
+
+        let data = buffer.as_mut_slice();
+        for r in 0..h {
+            let gy = wy[r];
+            for c in 0..w {
+                let g = wx[c] * gy;
+                let idx = r * w + c;
+                data[idx].re *= g;
+                data[idx].im *= g;
+            }
+        }
+        Ok(())
+    }
+
     fn fft2d(&self, buffer: &mut Self::Buffer2D) -> Result<()> {
         self.planner.borrow_mut().forward(buffer);
         Ok(())
@@ -97,7 +125,11 @@ impl ComputeBackend for CpuBackend {
         Ok((best_idx, best.sqrt()))
     }
 
-    fn argmax_magnitude_halfplane(&self, buffer: &Self::Buffer2D) -> Result<(usize, Real)> {
+    fn argmax_magnitude_halfplane(
+        &self,
+        buffer: &Self::Buffer2D,
+        min_radius: usize,
+    ) -> Result<(usize, Real)> {
         let layout = buffer.layout();
         let (w, h) = (layout.width, layout.height);
 
@@ -105,17 +137,15 @@ impl ComputeBackend for CpuBackend {
         let signed = |f: usize, n: usize| -> isize {
             let f = f as isize;
             let n = n as isize;
-            if f > n / 2 { f - n } else { f }
+            if f > n / 2 {
+                f - n
+            } else {
+                f
+            }
         };
 
-        // Exclude a Chebyshev ball around DC proportional to image size so
-        // low-frequency spatial gradients don't mask the true carrier.
-        // Mirrors C++ Spectrum offsetMin = max(rows/100, 20)/2. For small
-        // synthetic images this is 0 (no extra exclusion); for real images
-        // (≥1000 px) it suppresses the first ~10 bins around DC.
-        let dc_radius = (w.max(h) / 100) as isize;
-
         let data = buffer.as_slice();
+        let min_r2 = (min_radius * min_radius) as isize;
         let mut best_idx = 0usize;
         let mut best = Real::NEG_INFINITY;
         for fy in 0..h {
@@ -125,15 +155,13 @@ impl ComputeBackend for CpuBackend {
                     continue; // exclude DC
                 }
                 let sfx = signed(fx, w);
-                // Canonical half-plane: positive y frequency, or sfx > 0 on the
-                // zero-y axis. Mirrors C++ which zeroes the upper half of the
-                // fftshift spectrum (negative-y freqs) before maxCoeff().
-                let in_half = sfy > 0 || (sfy == 0 && sfx > 0);
-                if !in_half {
+                // Exclude the low-frequency disk (lighting/vignette content).
+                if sfx * sfx + sfy * sfy < min_r2 {
                     continue;
                 }
-                // Exclude the DC neighborhood.
-                if sfx.abs().max(sfy.abs()) < dc_radius {
+                // Canonical half-plane: positive x frequency, or the +y axis.
+                let in_half = sfx > 0 || (sfx == 0 && sfy > 0);
+                if !in_half {
                     continue;
                 }
                 let m = data[fy * w + fx].norm_sqr();
@@ -152,6 +180,7 @@ impl ComputeBackend for CpuBackend {
         exclude_x: usize,
         exclude_y: usize,
         radius: usize,
+        min_radius: usize,
     ) -> Result<(usize, Real)> {
         let layout = buffer.layout();
         let (w, h) = (layout.width, layout.height);
@@ -159,17 +188,16 @@ impl ComputeBackend for CpuBackend {
         let signed = |f: usize, n: usize| -> isize {
             let f = f as isize;
             let n = n as isize;
-            if f > n / 2 { f - n } else { f }
+            if f > n / 2 {
+                f - n
+            } else {
+                f
+            }
         };
         let ex = signed(exclude_x, w);
         let ey = signed(exclude_y, h);
         let r = radius as isize;
-        // Exclude a Chebyshev ball around DC proportional to image size so
-        // low-frequency spatial gradients don't mask the true carrier.
-        // Mirrors C++ Spectrum offsetMin = max(rows/100, 20)/2. For small
-        // synthetic images this is 0 (no extra exclusion); for real images
-        // (≥1000 px) it suppresses the first ~10 bins around DC.
-        let dc_radius = (w.max(h) / 100) as isize;
+        let min_r2 = (min_radius * min_radius) as isize;
 
         let data = buffer.as_slice();
         let mut best_idx = 0usize;
@@ -181,14 +209,11 @@ impl ComputeBackend for CpuBackend {
                     continue;
                 }
                 let sfx = signed(fx, w);
-                // Same half-plane convention as argmax_magnitude_halfplane:
-                // positive y frequency, or sfx > 0 on the zero-y axis.
-                let in_half = sfy > 0 || (sfy == 0 && sfx > 0);
-                if !in_half {
-                    continue;
+                if sfx * sfx + sfy * sfy < min_r2 {
+                    continue; // low-frequency lighting content
                 }
-                // Exclude DC neighborhood (same as argmax_magnitude_halfplane).
-                if sfx.abs().max(sfy.abs()) < dc_radius {
+                let in_half = sfx > 0 || (sfx == 0 && sfy > 0);
+                if !in_half {
                     continue;
                 }
                 // Skip the excluded neighborhood (Chebyshev distance in signed

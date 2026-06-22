@@ -126,13 +126,25 @@ pub struct AnalyseArgs {
     #[argh(option)]
     pub image: String,
 
-    /// band-pass filter width in bins (default 4.0)
-    #[argh(option, default = "4.0")]
+    /// band-pass filter width in bins (default 3.0, C++ PatternPhase default)
+    #[argh(option, default = "3.0")]
     pub sigma: f32,
 
-    /// peak-exclusion radius in bins when finding the second carrier (default 5)
-    #[argh(option, default = "5")]
-    pub exclude_radius: usize,
+    /// inner annulus radius for peak search in bins; 0 = no lower limit (default 20)
+    #[argh(option, default = "20")]
+    pub min_frequency: usize,
+
+    /// outer annulus radius for peak search in bins; 0 = no upper limit (default 500)
+    #[argh(option, default = "500")]
+    pub max_frequency: usize,
+
+    /// gaussian blur sigma applied to magnitude before peak search (default 0.5)
+    #[argh(option, default = "0.5")]
+    pub smoothing_sigma: f32,
+
+    /// disable the Hann window (windowing is on by default for real images)
+    #[argh(switch)]
+    pub no_window: bool,
 
     /// optional directory to also write control/stage images into
     #[argh(option)]
@@ -156,11 +168,27 @@ pub struct DetectMegarenaArgs {
     #[argh(option, default = "12")]
     pub code_size: u32,
 
-    /// band-pass filter width in bins (default 4.0)
-    #[argh(option, default = "4.0")]
+    /// band-pass filter width in bins (default 3.0, C++ PatternPhase default)
+    #[argh(option, default = "3.0")]
     pub sigma: f32,
 
-    /// peak-exclusion radius in bins (default 5)
-    #[argh(option, default = "5")]
-    pub exclude_radius: usize,
+    /// inner annulus radius for peak search in bins; 0 = no lower limit (default 20)
+    #[argh(option, default = "20")]
+    pub min_frequency: usize,
+
+    /// outer annulus radius for peak search in bins; 0 = no upper limit (default 500)
+    #[argh(option, default = "500")]
+    pub max_frequency: usize,
+
+    /// gaussian blur sigma applied to magnitude before peak search (default 0.5)
+    #[argh(option, default = "0.5")]
+    pub smoothing_sigma: f32,
+
+    /// disable the Hann window (windowing is on by default for real images)
+    #[argh(switch)]
+    pub no_window: bool,
+
+    /// path prefix for debug overlay images (writes <prefix>_spectrum.png and _decoded.png)
+    #[argh(option)]
+    pub debug_image: Option<String>,
 }

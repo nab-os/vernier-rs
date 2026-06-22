@@ -23,8 +23,8 @@ use vernier_core::buffer::BufferLayout;
 use vernier_core::{Complex32, ComputeBackend, Real};
 use vernier_cpu::CpuBackend;
 use vernier_detection::planefit::fit_plane;
-use vernier_patterns::PatternPose;
 use vernier_patterns::periodic::Periodic;
+use vernier_patterns::PatternPose;
 
 use crate::pgm;
 
@@ -79,7 +79,7 @@ impl Inspect {
         )?;
 
         // Locate the lobe (same half-plane rule as detection).
-        let (idx, _m) = backend.argmax_magnitude_halfplane(&buf).unwrap();
+        let (idx, _m) = backend.argmax_magnitude_halfplane(&buf, 0).unwrap();
         let (cx, cy) = (idx % w, idx / w);
 
         // --- Stage 2: the band-pass mask itself ---
@@ -94,9 +94,7 @@ impl Inspect {
         )?;
 
         // --- Stage 3: apply band-pass, save the isolated lobe ---
-        backend
-            .bandpass_filter(&mut buf, cx, cy, self.sigma as Real)
-            .unwrap();
+        backend.bandpass_filter(&mut buf, cx, cy, self.sigma as Real).unwrap();
         let filtered = backend.download(&buf).unwrap();
         let fmag: Vec<f64> = filtered
             .iter()
@@ -118,7 +116,7 @@ impl Inspect {
 
         // --- Stage 5: the fitted plane evaluated over the image ---
         let wrapped_real: Vec<Real> = phase_data.iter().map(|c| c.re as Real).collect();
-        let plane = fit_plane(&wrapped_real, w, h);
+        let plane = fit_plane(&wrapped_real, w, h, 0.5);
         let (cxf, cyf) = (w as Real / 2.0, h as Real / 2.0);
         let mut fitted = vec![0.0f64; w * h];
         for r in 0..h {

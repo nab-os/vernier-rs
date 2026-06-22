@@ -11,6 +11,7 @@ mod backend_select;
 mod commands;
 mod pgm;
 mod imageio;
+mod annotate;
 
 use args::{Command, TopLevel};
 use backend_select::{dispatch, BackendKind};
@@ -113,7 +114,10 @@ fn main() {
             let task = Analyse {
                 image_path: std::path::PathBuf::from(&a.image),
                 sigma: a.sigma,
-                exclude_radius: a.exclude_radius,
+                min_frequency: a.min_frequency,
+                max_frequency: a.max_frequency,
+                smoothing_sigma: a.smoothing_sigma,
+                window: !a.no_window,
                 stages_dir: a.stages.as_ref().map(std::path::PathBuf::from),
             };
             if let Err(e) = task.run() {
@@ -127,7 +131,11 @@ fn main() {
                 physical_period: a.period,
                 code_size: a.code_size,
                 sigma: a.sigma,
-                exclude_radius: a.exclude_radius,
+                min_frequency: a.min_frequency,
+                max_frequency: a.max_frequency,
+                smoothing_sigma: a.smoothing_sigma,
+                window: !a.no_window,
+                debug_image: a.debug_image.as_ref().map(std::path::PathBuf::from),
             };
             if let Err(e) = task.run() {
                 eprintln!("detect-megarena failed: {e}");

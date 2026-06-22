@@ -42,7 +42,11 @@ pub fn load_grayscale(path: &Path) -> Result<LoadedImage, String> {
     })
 }
 
-#[allow(dead_code)]
+/// Saves a row-major grayscale `f32` buffer (`0.0..=1.0`) as an 8-bit PNG.
+///
+/// Used to write annotated/result images. For the raw pipeline-stage dumps the
+/// dependency-free PGM writer is still used; this is for when a normal viewer
+/// and PNG are wanted.
 pub fn save_grayscale_png(
     path: &Path,
     width: usize,

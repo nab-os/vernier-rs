@@ -15,8 +15,8 @@ use vernier_core::buffer::BufferLayout;
 use vernier_core::{Complex32, ComputeBackend};
 use vernier_cpu::CpuBackend;
 use vernier_detection::spectrum::analyze_two;
-use vernier_pose::absolute::{extract_code, CoarseDecoder, MegarenaDecoder};
-use vernier_pose::{periodic, Calibration};
+use vernier_pose::absolute::{CoarseDecoder, MegarenaDecoder, extract_code};
+use vernier_pose::{Calibration, periodic};
 
 use crate::imageio::load_grayscale;
 
@@ -28,10 +28,18 @@ pub struct DetectMegarena {
     pub physical_period: f32,
     /// LFSR code size in bits (the paper uses 12).
     pub code_size: u32,
-    /// Band-pass filter width in bins.
+    /// Band-pass filter width in bins (C++ default 3.0).
     pub sigma: f32,
-    /// Peak-exclusion radius when finding the second carrier.
-    pub exclude_radius: usize,
+    /// Inner annulus radius for peak search in bins; 0 = no lower limit (C++ default 20).
+    pub min_frequency: usize,
+    /// Outer annulus radius for peak search in bins; 0 = no upper limit (C++ default 500).
+    pub max_frequency: usize,
+    /// Gaussian blur sigma applied to magnitude before peak search (C++ default 0.5).
+    pub smoothing_sigma: f32,
+    /// Apply a Hann window before the FFT (recommended for real images).
+    pub window: bool,
+    /// Optional path prefix for debug overlay images (spectrum + decoded cells).
+    pub debug_image: Option<std::path::PathBuf>,
 }
 
 impl DetectMegarena {
@@ -39,18 +47,18 @@ impl DetectMegarena {
     /// decodable pattern was found.
     pub fn run(&self) -> Result<(), String> {
         let img = load_grayscale(&self.image_path)?;
-        let (w, h) = (img.width, img.height);
+        let (width, height) = (img.width, img.height);
         println!(
             "loaded {} ({}x{}), physical period {} µm, code size {} bits",
             self.image_path.display(),
-            w,
-            h,
+            width,
+            height,
             self.physical_period,
             self.code_size
         );
 
         let backend = CpuBackend::new();
-        let layout = BufferLayout::packed(w, h);
+        let layout = BufferLayout::packed(width, height);
         let complex: Vec<Complex32> = img.data.iter().map(|&v| Complex32::new(v, 0.0)).collect();
         let mut buf = backend
             .upload(&complex, layout)
@@ -61,15 +69,55 @@ impl DetectMegarena {
             &backend,
             &mut buf,
             self.sigma as vernier_core::Real,
-            self.exclude_radius,
+            self.min_frequency,
+            self.max_frequency,
+            self.smoothing_sigma as vernier_core::Real,
+            self.window,
         )
         .map_err(|e| format!("detection failed: {e:?}"))?;
+        dbg!(detection.clone().dir1);
+        dbg!(detection.clone().dir2);
+
+        // Debug overlays: spectrum with detected carriers, image with decoded
+        // cells/bits. Generated before the (possibly-failing) decode so you can
+        // see what was found even when the code doesn't fully resolve.
+        if let Some(prefix) = &self.debug_image {
+            let gray: Vec<f64> = img.data.iter().map(|&v| v as f64).collect();
+            let spectrum_path = with_suffix(prefix, "_spectrum.png");
+            crate::commands::debug_render::render_spectrum_debug(
+                &gray,
+                width,
+                height,
+                &detection,
+                self.min_frequency,
+                &spectrum_path,
+            )?;
+
+            let intensity_r: Vec<vernier_core::Real> =
+                img.data.iter().map(|&v| v as vernier_core::Real).collect();
+            let (xb, yb) = vernier_pose::absolute::decode_bit_maps(&detection, &intensity_r);
+            let decode_path = with_suffix(prefix, "_decoded.png");
+            crate::commands::debug_render::render_decode_debug(
+                &gray,
+                width,
+                height,
+                &detection,
+                &xb,
+                &yb,
+                &decode_path,
+            )?;
+            println!(
+                "debug overlays: {} (carriers on spectrum), {} (decoded cells/bits)",
+                spectrum_path.display(),
+                decode_path.display()
+            );
+        }
 
         // Fine (sub-period) pose from the phase planes.
         // The pixel period is recovered from the carrier peak: period_px =
         // image_size / |peak frequency in cycles across the image|. We use the
         // plane gradient magnitude, which gives cycles-per-pixel directly.
-        let calib = Calibration::new(self.physical_period as vernier_core::Real, w, h);
+        let calib = Calibration::new(self.physical_period as vernier_core::Real, width, height);
         let fine = periodic::estimate(&detection.dir1.plane, &detection.dir2.plane, &calib);
 
         // Absolute code extraction + decode.
@@ -78,53 +126,69 @@ impl DetectMegarena {
         let code = match extract_code(&detection, &intensity, self.code_size) {
             Some(c) => c,
             None => {
-                println!("Pattern not found... (no full {}-bit code window visible; \
+                println!(
+                    "Pattern not found... (no full {}-bit code window visible; \
                           the image may be too small — need ~{} periods across the field, \
                           or the pattern is occluded/low-contrast)",
-                    self.code_size, 3 * self.code_size);
+                    self.code_size,
+                    3 * self.code_size
+                );
                 return Ok(());
             }
         };
 
         println!(
-            "  dir1 peak_bin={:?} plane=(a={:.4} b={:.4} c={:.4})",
-            detection.dir1.peak_bin, detection.dir1.plane.a, detection.dir1.plane.b, detection.dir1.plane.c
+            "  x_first_triple={} y_first_triple={}",
+            code.x_first_triple, code.y_first_triple
         );
-        println!(
-            "  dir2 peak_bin={:?} plane=(a={:.4} b={:.4} c={:.4})",
-            detection.dir2.peak_bin, detection.dir2.plane.a, detection.dir2.plane.b, detection.dir2.plane.c
-        );
-        println!(
-            "  extracted: x_window={:?} (first_triple={})",
-            code.x_window, code.x_first_triple
-        );
-        println!(
-            "  extracted: y_window={:?} (first_triple={})",
-            code.y_window, code.y_first_triple
-        );
+        println!("  x_window={:?}", code.x_window);
+        println!("  y_window={:?}", code.y_window);
 
         let decoder = MegarenaDecoder::new(
             self.code_size,
             code.x_window.clone(),
             code.y_window.clone(),
-            0, // quadrant supplied; corner-sync recovery is a documented extension
+            code.k3,
         )
         .ok_or_else(|| format!("unsupported code size {}", self.code_size))?;
 
         match decoder.decode() {
             Some(orders) => {
-                // Absolute position = cell order * period + fine sub-period part.
+                // C++ absolute position formula (MegarenaPatternDetector::draw):
+                //   periodShift = bitSequence DOT-period index of image centre
+                //               = 3*(K_center + order − 1) + 1
+                //   x = −physicalPeriod × (c/(2π) + periodShift)
+                //
+                // Swap/flip follows C++ computeAbsolutePose rotation logic:
+                //   swap x↔y when exactly one MSB is 0 (rotate90 or rotate270)
+                //   negate c for the direction whose MSB=0 (C++ plane.flip() negates a,b,c)
+                use vernier_core::scalar::consts::TAU;
                 let period = self.physical_period as vernier_core::Real;
-                let abs_x = orders.k1 as vernier_core::Real * period + fine.x;
-                let abs_y = orders.k2 as vernier_core::Real * period + fine.y;
+                let order = self.code_size as i64;
+                let swap = code.msb1 != code.msb2;
+                let (k_cx, k_cy, c_x, c_y, msb_x, msb_y) = if swap {
+                    (code.y_k_center, code.x_k_center,
+                     detection.dir2.plane.c, detection.dir1.plane.c,
+                     code.msb2, code.msb1)
+                } else {
+                    (code.x_k_center, code.y_k_center,
+                     detection.dir1.plane.c, detection.dir2.plane.c,
+                     code.msb1, code.msb2)
+                };
+                let c_x_eff = if msb_x { c_x } else { -c_x };
+                let c_y_eff = if msb_y { c_y } else { -c_y };
+                let maxcol_x = 3 * (k_cx + order - 1) + 1;
+                let maxcol_y = 3 * (k_cy + order - 1) + 1;
+                let abs_x = -(period * (c_x_eff / TAU + maxcol_x as vernier_core::Real));
+                let abs_y = -(period * (c_y_eff / TAU + maxcol_y as vernier_core::Real));
                 println!("Pattern found.");
                 println!(
                     "Estimated pose: x={:.4} µm, y={:.4} µm, θ={:.6} rad (quadrant k3={})",
                     abs_x, abs_y, fine.theta, orders.k3
                 );
                 println!(
-                    "  (fine: x={:.4} y={:.4} within cell; orders k1={} k2={})",
-                    fine.x, fine.y, orders.k1, orders.k2
+                    "  (K_center x={} y={}; maxcol x={} y={})",
+                    k_cx, k_cy, maxcol_x, maxcol_y
                 );
             }
             None => {
@@ -136,4 +200,12 @@ impl DetectMegarena {
         }
         Ok(())
     }
+}
+
+/// Builds a sibling path by appending a suffix to the prefix's file stem.
+/// e.g. prefix "out/dbg" + "_spectrum.png" -> "out/dbg_spectrum.png".
+fn with_suffix(prefix: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut s = prefix.as_os_str().to_os_string();
+    s.push(suffix);
+    std::path::PathBuf::from(s)
 }
