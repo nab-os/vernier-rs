@@ -132,14 +132,15 @@ pub(crate) fn fit_plane_to_unwrapped(
     crop_factor: Real,
 ) -> PhasePlane {
     // --- Least-squares plane fit, centered coordinates ---
-    // Coordinates i (col) and j (row) run from -w/2.. and -h/2.., so the fitted
-    // constant `c` is the phase at the image center.
-    let cx = width as Real / 2.0;
-    let cy = height as Real / 2.0;
-
-    // C++ RegressionPlane: colOffset = (int)(cols * cropFactor / 2)
     let col_off = ((width as Real * crop_factor) / 2.0) as usize;
     let row_off = ((height as Real * crop_factor) / 2.0) as usize;
+
+    let cropped_w = width - 2 * col_off;
+    let cropped_h = height - 2 * row_off;
+
+    // C++ integer division
+    let cx = (cropped_w / 2) as Real;
+    let cy = (cropped_h / 2) as Real;
 
     // Accumulate normal-equation sums for [a, b, c].
     let (mut sii, mut sjj, mut sij) = (0.0, 0.0, 0.0);
@@ -147,9 +148,9 @@ pub(crate) fn fit_plane_to_unwrapped(
     let (mut spi, mut spj, mut sp) = (0.0, 0.0, 0.0);
 
     for r in row_off..(height - row_off) {
-        let j = r as Real - cy;
+        let j = (r - row_off) as Real - cy;
         for col in col_off..(width - col_off) {
-            let i = col as Real - cx;
+            let i = (col - col_off) as Real - cx;
             let p = phase[r * width + col];
             sii += i * i;
             sjj += j * j;

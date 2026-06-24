@@ -15,7 +15,7 @@ use vernier_core::buffer::BufferLayout;
 use vernier_core::{Complex32, ComputeBackend};
 use vernier_cpu::CpuBackend;
 use vernier_detection::spectrum::analyze_two;
-use vernier_pose::absolute::{CoarseDecoder, MegarenaDecoder, extract_code};
+use vernier_pose::absolute::{CoarseDecoder, MegarenaDecoder, detect_orientation, extract_code};
 use vernier_pose::{Calibration, periodic};
 
 use crate::imageio::load_grayscale;
@@ -36,10 +36,10 @@ pub struct DetectMegarena {
     pub max_frequency: usize,
     /// Gaussian blur sigma applied to magnitude before peak search (C++ default 0.5).
     pub smoothing_sigma: f32,
-    /// Apply a Hann window before the FFT (recommended for real images).
-    pub window: bool,
     /// Optional path prefix for debug overlay images (spectrum + decoded cells).
     pub debug_image: Option<std::path::PathBuf>,
+    /// Print intermediate detection details (carriers, planes, orientation).
+    pub verbose: bool,
 }
 
 impl DetectMegarena {
@@ -72,7 +72,6 @@ impl DetectMegarena {
             self.min_frequency,
             self.max_frequency,
             self.smoothing_sigma as vernier_core::Real,
-            self.window,
         )
         .map_err(|e| format!("detection failed: {e:?}"))?;
 
@@ -111,6 +110,61 @@ impl DetectMegarena {
             );
         }
 
+        if self.verbose {
+            let signed = |f: usize, n: usize| -> isize {
+                if f > n / 2 {
+                    f as isize - n as isize
+                } else {
+                    f as isize
+                }
+            };
+            let (bx1, by1) = detection.dir1.peak_bin;
+            let (bx2, by2) = detection.dir2.peak_bin;
+            println!(
+                "carriers: dir1 bin=({},{}) sfx={} sfy={}  dir2 bin=({},{}) sfx={} sfy={}",
+                bx1,
+                by1,
+                signed(bx1, width),
+                signed(by1, height),
+                bx2,
+                by2,
+                signed(bx2, width),
+                signed(by2, height),
+            );
+            println!(
+                "planes:   dir1 a={:.6} b={:.6} c={:.6}",
+                detection.dir1.plane.a, detection.dir1.plane.b, detection.dir1.plane.c,
+            );
+            println!(
+                "          dir2 a={:.6} b={:.6} c={:.6}",
+                detection.dir2.plane.a, detection.dir2.plane.b, detection.dir2.plane.c,
+            );
+            let intensity_v: Vec<vernier_core::Real> =
+                img.data.iter().map(|&v| v as vernier_core::Real).collect();
+            if let Some((global, orient)) = detect_orientation(&detection, &intensity_v) {
+                println!("global cell (i=dir1%3 rows, j=dir2%3 cols):");
+                for i in 0..3 {
+                    println!(
+                        "  row {}: [{:.4}, {:.4}, {:.4}]",
+                        i, global[i][0], global[i][1], global[i][2],
+                    );
+                }
+                println!(
+                    "orient: coding1={} coding2={} quad={} missing1={} missing2={}  \
+                     msb1={} msb2={}",
+                    orient.coding1,
+                    orient.coding2,
+                    orient.quadrant,
+                    orient.missing1,
+                    orient.missing2,
+                    (orient.missing1 + 1).rem_euclid(3) == orient.coding1,
+                    (orient.missing2 + 1).rem_euclid(3) == orient.coding2,
+                );
+            } else {
+                println!("orientation detection failed (empty cell bin)");
+            }
+        }
+
         // Fine (sub-period) pose from the phase planes.
         // The pixel period is recovered from the carrier peak: period_px =
         // image_size / |peak frequency in cycles across the image|. We use the
@@ -147,7 +201,7 @@ impl DetectMegarena {
             Some(orders) => {
                 // C++ absolute position formula (MegarenaPatternDetector::draw):
                 //   periodShift = bitSequence DOT-period index of image centre
-                //               = 3*(K_center + order − 1) + 1
+                //               = 3*(K_center + order)
                 //   x = −physicalPeriod × (c/(2π) + periodShift)
                 //
                 // Swap/flip follows C++ computeAbsolutePose rotation logic:
@@ -178,10 +232,22 @@ impl DetectMegarena {
                 };
                 let c_x_eff = if msb_x { c_x } else { -c_x };
                 let c_y_eff = if msb_y { c_y } else { -c_y };
-                let maxcol_x = 3 * (k_cx + order - 1) + 1;
-                let maxcol_y = 3 * (k_cy + order - 1) + 1;
+                let maxcol_x = 3 * (k_cx + order);
+                let maxcol_y = 3 * (k_cy + order);
                 let abs_x = -(period * (c_x_eff / TAU + maxcol_x as vernier_core::Real));
                 let abs_y = -(period * (c_y_eff / TAU + maxcol_y as vernier_core::Real));
+                if self.verbose {
+                    println!(
+                        "windows: x_first_triple={} y_first_triple={}  msb1={} msb2={}  k3={}",
+                        code.x_first_triple, code.y_first_triple, code.msb1, code.msb2, code.k3,
+                    );
+                    println!("x_window: {:?}", code.x_window);
+                    println!("y_window: {:?}", code.y_window);
+                    println!(
+                        "K_center: x={} y={}  maxcol x={} y={}",
+                        k_cx, k_cy, maxcol_x, maxcol_y,
+                    );
+                }
                 println!("Pattern found.");
                 println!(
                     "Estimated pose: x={:.4} µm, y={:.4} µm, θ={:.6} rad (quadrant k3={})",

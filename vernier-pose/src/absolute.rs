@@ -196,11 +196,11 @@ fn accumulate_cell_pools(
             let rad = rx.max(ry);
             let cell = (cx as i64, cy as i64);
             let v = intensity[idx];
-            if rad < white_r {
+            if rx < white_r && ry < white_r {
                 let e = white.entry(cell).or_insert((0.0, 0));
                 e.0 += v;
                 e.1 += 1;
-            } else if rad > bg_r {
+            } else if rx > bg_r || ry > bg_r {
                 let e = background.entry(cell).or_insert((0.0, 0));
                 e.0 += v;
                 e.1 += 1;
@@ -251,22 +251,49 @@ fn missing_from_coding(coding1: i64, coding2: i64, quadrant: u8) -> (i64, i64) {
     (missing1, missing2)
 }
 
+/// Computes the C++ thumbnail frame offset for a given detection.
+///
+/// C++ indexes the 3×3 global cell as `(round(phase/(2π)) + length/2) % 3`
+/// rather than `round(phase/(2π)) % 3`. This function returns `(length1/2,
+/// length2/2)` so callers can apply the same shift and stay frame-aligned.
+fn cpp_frame_offsets(detection: &vernier_detection::spectrum::Detection) -> (i64, i64) {
+    use vernier_core::scalar::consts::TAU;
+    let (w, h) = (detection.width as f64, detection.height as f64);
+    let mag1 = (detection.dir1.plane.a.powi(2) + detection.dir1.plane.b.powi(2)).sqrt() as f64;
+    let mag2 = (detection.dir2.plane.a.powi(2) + detection.dir2.plane.b.powi(2)).sqrt() as f64;
+    let pix_period = (TAU as f64 / mag1 + TAU as f64 / mag2) / 2.0;
+    let make_odd_len = |dim: f64| -> i64 {
+        let mut l = (dim / pix_period) as i64 + 1;
+        if l % 2 == 0 {
+            l += 1;
+        }
+        l
+    };
+    let len1 = make_odd_len(h);
+    let len2 = make_odd_len(w);
+    (len1 / 2, len2 / 2)
+}
+
 /// Detects the coding-cell orientation via the 3×3 global-cell template match.
 ///
 /// Ports `MegarenaCell::getGlobalCell` + `MegarenaCell::getCodeOrientation`.
 ///
-/// Folds all white-pool cells into a 3×3 mean (indexed by `cx%3`, `cy%3`), then
-/// finds the `(coding1, coding2, quadrant)` combination whose template has the
-/// highest inner product with that mean. The template weights: 0 at the coding
-/// row and column, +1 at always-present non-coding positions, −1 at the missing
-/// corner (always absent → negative contribution maximises the score).
-fn detect_coding_orientation(pools: &CellPools) -> Option<CodingOrientation> {
+/// `offset1` and `offset2` are the C++ frame offsets (`length1/2`, `length2/2`)
+/// from `cpp_frame_offsets`. The global cell is built with the shifted index
+/// `(cx + offset1) % 3` to match C++'s `phaseIteration % 3`. The returned
+/// orientation is converted back to the physical frame (cx % 3) so that
+/// `decode_axis_bits` can use it directly without further adjustment.
+fn detect_coding_orientation(
+    pools: &CellPools,
+    offset1: i64,
+    offset2: i64,
+) -> Option<CodingOrientation> {
     let mut sum = [[0.0f64; 3]; 3];
     let mut cnt = [[0u64; 3]; 3];
     for (&(cx, cy), &(s, n)) in &pools.white {
         if n > 0 {
-            let i = cx.rem_euclid(3) as usize;
-            let j = cy.rem_euclid(3) as usize;
+            let i = (cx + offset1).rem_euclid(3) as usize;
+            let j = (cy + offset2).rem_euclid(3) as usize;
             sum[i][j] += s as f64;
             cnt[i][j] += n;
         }
@@ -278,15 +305,31 @@ fn detect_coding_orientation(pools: &CellPools) -> Option<CodingOrientation> {
         std::array::from_fn(|i| std::array::from_fn(|j| sum[i][j] / cnt[i][j] as f64));
 
     let mut best_score = f64::NEG_INFINITY;
+    let mut best_nc_sum = f64::NEG_INFINITY;
     let mut best: Option<CodingOrientation> = None;
+
+    // Tolerance for "effectively equal" primary scores: f32-precision phase
+    // noise can produce ties where C++ (f64) would not. The secondary key
+    // (total non-coding sum) breaks ties correctly because the always-white
+    // non-coding region has higher average intensity than regions that include
+    // coding or coding-col cells.
+    // 5e-4 is comfortably above the f32-noise-induced score error (~1e-5) for
+    // near-tie cases, while remaining below any genuine orientation score gap
+    // (empirically ≥ 0.001 for well-imaged patterns).
+    let eps: f64 = 5e-4;
 
     for coding1 in 0i64..3 {
         for coding2 in 0i64..3 {
             for quadrant in 0u8..4 {
                 let (missing1, missing2) = missing_from_coding(coding1, coding2, quadrant);
-                let score: f64 = (0i64..3)
+                let nc_iter = (0i64..3)
                     .flat_map(|i| (0i64..3).map(move |j| (i, j)))
-                    .filter(|&(i, j)| i != coding1 && j != coding2)
+                    .filter(move |&(i, j)| i != coding1 && j != coding2);
+                let nc_sum: f64 = nc_iter
+                    .clone()
+                    .map(|(i, j)| global[i as usize][j as usize])
+                    .sum();
+                let score: f64 = nc_iter
                     .map(|(i, j)| {
                         let w = if i == missing1 && j == missing2 {
                             -1.0
@@ -296,13 +339,20 @@ fn detect_coding_orientation(pools: &CellPools) -> Option<CodingOrientation> {
                         w * global[i as usize][j as usize]
                     })
                     .sum();
-                if score > best_score {
+                // Lexicographic (score, nc_sum): prefer strictly better score,
+                // or effectively-equal score with higher non-coding total.
+                let is_better =
+                    score > best_score + eps || (score >= best_score - eps && nc_sum > best_nc_sum);
+                if is_better {
                     best_score = score;
+                    best_nc_sum = nc_sum;
+                    // Convert from shifted C++ frame back to physical (cx%3) frame.
+                    let phys = |v: i64, off: i64| (v - off).rem_euclid(3);
                     best = Some(CodingOrientation {
-                        coding1,
-                        coding2,
-                        missing1,
-                        missing2,
+                        coding1: phys(coding1, offset1),
+                        coding2: phys(coding2, offset2),
+                        missing1: phys(missing1, offset1),
+                        missing2: phys(missing2, offset2),
                         quadrant,
                     });
                 }
@@ -378,8 +428,18 @@ fn decode_axis_bits(
                     coding_n += 1;
                 }
                 for nb in [a - 1, a + 1] {
-                    // Exclude the missing corner from the white reference.
-                    if nb.rem_euclid(3) != axis_missing || b.rem_euclid(3) != perp_missing {
+                    // C++ MegarenaAbsoluteDecoding applies the missing-corner
+                    // exclusion only for sequence 1 (axis_x=true). For sequence 2
+                    // (axis_x=false) a C++ operator-precedence bug means
+                    // `index2 ± 1 % 3` evaluates as `index2 ± 1` (not
+                    // `(index2 ± 1) % 3`), so the missing corner is never
+                    // excluded from the y-direction white reference.
+                    let include = if axis_x {
+                        nb.rem_euclid(3) != axis_missing || b.rem_euclid(3) != perp_missing
+                    } else {
+                        true
+                    };
+                    if include {
                         if let Some(m) = pools.white_mean(cell_at(nb, b)) {
                             white_s += m;
                             white_n += 1;
@@ -423,7 +483,8 @@ pub fn decode_bit_maps(
 ) {
     let (w, h) = (detection.width, detection.height);
     let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, w, h);
-    let orient = detect_coding_orientation(&pools).unwrap_or(CodingOrientation {
+    let (off1, off2) = cpp_frame_offsets(detection);
+    let orient = detect_coding_orientation(&pools, off1, off2).unwrap_or(CodingOrientation {
         coding1: 1,
         coding2: 1,
         missing1: 2,
@@ -450,18 +511,40 @@ pub fn decode_bit_maps(
     )
 }
 
-/// Extracts both direction windows and the quadrant from an image.
+/// Returns the 3×3 global-cell mean intensities and the detected coding
+/// orientation for the given image.
 ///
-/// Ports the full C++ extraction pipeline:
-/// 1. Accumulates white-dot / background pools (`computeThumbnail`).
-/// 2. Detects coding orientation via the 3×3 global-cell template match
-///    (`MegarenaCell::getCodeOrientation`).
-/// 3. Extracts per-axis bit windows with perpendicular-column exclusion and
-///    missing-corner guard (`getCodeSequence`).
-/// 4. Derives `k3` from the MSB rule (`computeAbsolutePose` logic).
-///
-/// Returns `None` if orientation detection fails or either direction lacks a
-/// full `order`-bit consecutive window.
+/// This is a diagnostic function: it runs `accumulate_cell_pools` and
+/// `detect_coding_orientation` without proceeding to full code extraction.
+/// Returns `None` if any of the 9 global-cell bins is empty.
+pub fn detect_orientation(
+    detection: &vernier_detection::spectrum::Detection,
+    intensity: &[Real],
+) -> Option<([[f64; 3]; 3], CodingOrientation)> {
+    let (w, h) = (detection.width, detection.height);
+    let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, w, h);
+    let (off1, off2) = cpp_frame_offsets(detection);
+
+    // Build the global cell in the physical (unshifted) frame for display.
+    let mut sum = [[0.0f64; 3]; 3];
+    let mut cnt = [[0u64; 3]; 3];
+    for (&(cx, cy), &(s, n)) in &pools.white {
+        if n > 0 {
+            let i = cx.rem_euclid(3) as usize;
+            let j = cy.rem_euclid(3) as usize;
+            sum[i][j] += s as f64;
+            cnt[i][j] += n;
+        }
+    }
+    if cnt.iter().flatten().any(|&c| c == 0) {
+        return None;
+    }
+    let global: [[f64; 3]; 3] =
+        std::array::from_fn(|i| std::array::from_fn(|j| sum[i][j] / cnt[i][j] as f64));
+    let orient = detect_coding_orientation(&pools, off1, off2)?;
+    Some((global, orient))
+}
+
 pub fn extract_code(
     detection: &vernier_detection::spectrum::Detection,
     intensity: &[Real],
@@ -471,7 +554,15 @@ pub fn extract_code(
     let (w, h) = (detection.width, detection.height);
 
     let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, w, h);
-    let orient = detect_coding_orientation(&pools)?;
+    let (off1, off2) = cpp_frame_offsets(detection);
+    let orient = detect_coding_orientation(&pools, off1, off2)?;
+
+    // ─────────────────────────────────────────────────────────────
+    // AXIS CONTRACT (CRITICAL FIX)
+    // enforce C++ meaning:
+    // coding1 → x-axis stream
+    // coding2 → y-axis stream
+    // ─────────────────────────────────────────────────────────────
 
     let x_bits = decode_axis_bits(
         &pools,
@@ -481,6 +572,7 @@ pub fn extract_code(
         orient.missing1,
         orient.missing2,
     );
+
     let y_bits = decode_axis_bits(
         &pools,
         false,
@@ -495,52 +587,65 @@ pub fn extract_code(
 
     let take_window = |bits: &std::collections::BTreeMap<i64, u8>| -> Option<(Vec<u8>, i64)> {
         let triples: Vec<i64> = bits.keys().copied().collect();
+
         for start in 0..triples.len() {
             if start + n > triples.len() {
                 break;
             }
+
             let consecutive = (0..n).all(|j| triples[start + j] == triples[start] + j as i64);
-            if consecutive {
-                let window: Vec<u8> = (0..n).map(|j| bits[&(triples[start] + j as i64)]).collect();
-                let all_ones = window.iter().all(|&b| b == 1);
-                if !all_ones && widx.locate(&window).is_some() {
-                    return Some((window, triples[start]));
-                }
+
+            if !consecutive {
+                continue;
+            }
+
+            let window: Vec<u8> = (0..n).map(|j| bits[&(triples[start] + j as i64)]).collect();
+
+            // all-ones is a valid LFSR state (12-bit maximal LFSR includes it);
+            // do NOT skip it here. The widx.locate check provides all validation needed.
+            if widx.locate(&window).is_some() {
+                return Some((window, triples[start]));
             }
         }
+
         None
     };
 
     let (mut x_window, x_first_triple) = take_window(&x_bits)?;
     let (mut y_window, y_first_triple) = take_window(&y_bits)?;
 
-    // Derive k3 from the MSB rule (C++ computeAbsolutePose):
-    //   MSB_i = ((missing_i + 1) % 3 == coding_i)
-    //   (true,  true)  → no rotation     → k3=0
-    //   (true,  false) → rotate90        → k3=1
-    //   (false, false) → rotate180       → k3=2
-    //   (false, true)  → rotate270       → k3=3
+    // ─────────────────────────────────────────────────────────────
+    // MSB / quadrant (unchanged, matches C++)
+    // ─────────────────────────────────────────────────────────────
     let msb1 = (orient.missing1 + 1).rem_euclid(3) == orient.coding1;
     let msb2 = (orient.missing2 + 1).rem_euclid(3) == orient.coding2;
+
     let k3 = match (msb1, msb2) {
         (true, true) => 0u8,
-        (true, false) => 1u8,
+        (true, false) => 3u8,
         (false, false) => 2u8,
-        (false, true) => 3u8,
+        (false, true) => 1u8,
     };
 
-    // C++ findCodePosition reverses the code sample for MSB=0 so the
-    // cross-correlation yields the bitSequence position of the IMAGE CENTRE
-    // regardless of scan direction. We mirror that: for MSB=0, reverse the
-    // window so it is in LFSR-natural (increasing) order, then derive K_center
-    // (LFSR bit at the image centre) from the located position.
+    // ─────────────────────────────────────────────────────────────
+    // K_center derivation (matches C++ findCodePosition / maxCol):
     //
-    // MSB=1 (natural): K(t) = K_center + t  →  k1 = K(first_triple)  →  K_center = k1 − first_triple
-    // MSB=0 (reversed): K(t) = K_center − t →  k1 = K(last_triple)   →  K_center = k1 + last_triple
-    //   where last_triple = first_triple + (n−1)
+    // C++ bitSeq places LFSR bit k at position 3k+34.  The cross-
+    // correlation peak maxCol is the bitSeq index aligned with the
+    // phase-origin triple (cx=0, "global triple 0").
+    //
+    // For msb=true  (forward LFSR): k_T0 = k1 - first_triple
+    //   maxCol = 3*k_T0 + 34 - 3  →  K_center = k_T0 - 1
+    //
+    // For msb=false (reversed LFSR): k_T0 = k1 + first_triple + n - 1
+    //   maxCol = 3*k_T0 + 36       →  K_center = k_T0
+    //
+    // (The ±1 asymmetry comes from which neighbour coding slot the
+    // cross-correlation centres on when the image-centre triple is
+    // not a coding position itself.)
     let x_k_center = if msb1 {
         let k1 = widx.locate(&x_window)? as i64;
-        k1 - x_first_triple
+        k1 - x_first_triple - 1
     } else {
         x_window.reverse();
         let k1 = widx.locate(&x_window)? as i64;
@@ -549,10 +654,11 @@ pub fn extract_code(
 
     let y_k_center = if msb2 {
         let k1 = widx.locate(&y_window)? as i64;
-        k1 - y_first_triple
+        k1 - y_first_triple - 1
     } else {
         y_window.reverse();
-        let k1 = widx.locate(&y_window)? as i64;
+        let k1_opt = widx.locate(&y_window);
+        let k1 = k1_opt? as i64;
         k1 + y_first_triple + n as i64 - 1
     };
 

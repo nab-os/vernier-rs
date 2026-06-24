@@ -76,22 +76,6 @@ pub trait ComputeBackend {
 
     // --- On-device compute primitives ---------------------------------------
 
-    /// Applies a separable Hann (raised-cosine) window in place, in the spatial
-    /// domain, before the forward FFT.
-    ///
-    /// Tapers the image to zero at its borders, removing the hard edge that
-    /// otherwise smears spectral energy into a cross of leakage across the whole
-    /// spectrum (the bright axes in an un-windowed FFT magnitude). Apodization
-    /// sharpens the carrier lobes, improving both peak localization and the
-    /// phase-plane fit — matching the C++ `Spatial::hannWindow` stage. On a clean
-    /// synthetic pattern the effect is small; on a real photo with edge content
-    /// it is significant.
-    ///
-    /// `window(i,j) = w(i)·w(j)` with `w(k) = 0.5·(1 - cos(2π·k/(N-1)))`. A
-    /// separable per-pixel multiply: a trivial kernel on the GPU, a `map` on the
-    /// CPU. Apply to the real image before [`fft2d`](ComputeBackend::fft2d).
-    fn hann_window(&self, buffer: &mut Self::Buffer2D) -> Result<()>;
-
     /// In-place 2D forward FFT of `buffer`.
     ///
     /// Implementations may require power-of-two dimensions and should return

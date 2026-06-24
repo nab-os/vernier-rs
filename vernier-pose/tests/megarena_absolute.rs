@@ -39,7 +39,7 @@ fn megarena_absolute_roundtrip() {
 
     // Two-direction detection -> phase maps for both axes.
     // sigma=4.0, no annulus limits (synthetic image, no lighting), no blur, no window.
-    let detection = analyze_two(&backend, &mut buf, 4.0, 0, 0, 0.0, false).unwrap();
+    let detection = analyze_two(&backend, &mut buf, 4.0, 0, 0, 0.0).unwrap();
 
     // Extract the binary code windows from the image intensities + phase maps.
     let intensity: Vec<f32> = image.as_slice().to_vec();

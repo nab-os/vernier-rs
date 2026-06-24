@@ -59,34 +59,6 @@ impl ComputeBackend for CpuBackend {
         Ok(buffer.as_slice().to_vec())
     }
 
-    fn hann_window(&self, buffer: &mut Self::Buffer2D) -> Result<()> {
-        let layout = buffer.layout();
-        let (w, h) = (layout.width, layout.height);
-
-        // Precompute the separable 1D Hann factors for each axis.
-        let hann = |k: usize, n: usize| -> f32 {
-            if n <= 1 {
-                return 1.0;
-            }
-            use std::f32::consts::TAU;
-            0.5 * (1.0 - (TAU * k as f32 / (n as f32 - 1.0)).cos())
-        };
-        let wx: Vec<f32> = (0..w).map(|i| hann(i, w)).collect();
-        let wy: Vec<f32> = (0..h).map(|j| hann(j, h)).collect();
-
-        let data = buffer.as_mut_slice();
-        for r in 0..h {
-            let gy = wy[r];
-            for c in 0..w {
-                let g = wx[c] * gy;
-                let idx = r * w + c;
-                data[idx].re *= g;
-                data[idx].im *= g;
-            }
-        }
-        Ok(())
-    }
-
     fn fft2d(&self, buffer: &mut Self::Buffer2D) -> Result<()> {
         self.planner.borrow_mut().forward(buffer);
         Ok(())

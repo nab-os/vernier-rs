@@ -123,14 +123,10 @@ pub fn analyze_two<B: ComputeBackend>(
     min_frequency: usize,
     max_frequency: usize,
     smoothing_sigma: Real,
-    window: bool,
 ) -> Result<Detection>
 where
     B::Buffer2D: Clone,
 {
-    if window {
-        backend.hann_window(buffer)?;
-    }
     forward(backend, buffer)?;
     let layout = buffer.layout();
     let (w, h) = (layout.width, layout.height);
@@ -148,6 +144,9 @@ where
         smoothing_sigma,
     )
     .ok_or_else(|| VernierError::Backend("no carrier peaks found in spectrum".into()))?;
+
+    eprintln!("peak 1: {},{}", cx1, cy1);
+    eprintln!("peak 2: {},{}", cx2, cy2);
 
     let (dir1, phase1) = analyze_at(backend, buffer.clone(), cx1, cy1, sigma)?;
     let (dir2, phase2) = analyze_at(backend, buffer.clone(), cx2, cy2, sigma)?;
@@ -328,7 +327,12 @@ fn gaussian_blur_2d(data: &mut [Real], width: usize, height: usize, sigma: Real)
     }
 }
 
-/// Argmax in the canonical half-plane (`sfx > 0`, or `sfx == 0` and `sfy > 0`).
+/// Argmax in the positive-fy half-plane (`sfy >= 0`), mirroring C++
+/// `PatternPhase::peaksSearch` which zeros the top half of the shifted spectrum
+/// before calling `maxCoeff`.  The C++ bottom half is `sfy >= 0` (rows ≥ height/2
+/// in the shifted spectrum).  This matches image 2's case where the near-vertical
+/// carrier at sfx=1,sfy=-220 is a stronger stray than the true horizontal carrier
+/// at sfx=73,sfy=2 — excluding sfy<0 prevents that stray from winning.
 fn halfplane_argmax(mag: &[Real], width: usize, height: usize) -> Option<(usize, usize)> {
     let signed = |f: usize, n: usize| -> isize {
         let f = f as isize;
@@ -339,11 +343,10 @@ fn halfplane_argmax(mag: &[Real], width: usize, height: usize) -> Option<(usize,
     let mut result = None;
     for fy in 0..height {
         let sfy = signed(fy, height);
+        if sfy < 0 {
+            continue;
+        }
         for fx in 0..width {
-            let sfx = signed(fx, width);
-            if !(sfx > 0 || (sfx == 0 && sfy > 0)) {
-                continue;
-            }
             let m = mag[fy * width + fx];
             if m > best {
                 best = m;
@@ -354,8 +357,8 @@ fn halfplane_argmax(mag: &[Real], width: usize, height: usize) -> Option<(usize,
     result
 }
 
-/// Argmax in the canonical half-plane, excluding bins whose direction from DC
-/// is within `half_width` radians of `center_angle`.
+/// Argmax in the positive-fy half-plane (`sfy >= 0`), excluding bins whose
+/// direction from DC is within `half_width` radians of `center_angle`.
 fn halfplane_argmax_angular_excl(
     mag: &[Real],
     width: usize,
@@ -372,13 +375,13 @@ fn halfplane_argmax_angular_excl(
     let mut result = None;
     for fy in 0..height {
         let sfy_i = signed(fy, height);
+        if sfy_i < 0 {
+            continue;
+        }
         let sfy = sfy_i as Real;
         for fx in 0..width {
             let sfx_i = signed(fx, width);
             let sfx = sfx_i as Real;
-            if !(sfx_i > 0 || (sfx_i == 0 && sfy_i > 0)) {
-                continue;
-            }
             // Angular difference from center (shortest arc, in (-π, π]).
             let angle = sfy.atan2(sfx);
             let diff = ((angle - center_angle + PI).rem_euclid(TAU)) - PI;

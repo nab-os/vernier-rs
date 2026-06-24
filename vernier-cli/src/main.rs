@@ -120,7 +120,6 @@ fn main() {
                 min_frequency: a.min_frequency,
                 max_frequency: a.max_frequency,
                 smoothing_sigma: a.smoothing_sigma,
-                window: !a.no_window,
                 stages_dir: a.stages.as_ref().map(std::path::PathBuf::from),
             };
             if let Err(e) = task.run() {
@@ -137,8 +136,8 @@ fn main() {
                 min_frequency: a.min_frequency,
                 max_frequency: a.max_frequency,
                 smoothing_sigma: a.smoothing_sigma,
-                window: !a.no_window,
                 debug_image: a.debug_image.as_ref().map(std::path::PathBuf::from),
+                verbose: a.verbose,
             };
             if let Err(e) = task.run() {
                 eprintln!("detect-megarena failed: {e}");

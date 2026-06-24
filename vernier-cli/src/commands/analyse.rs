@@ -30,8 +30,6 @@ pub struct Analyse {
     pub max_frequency: usize,
     /// Gaussian blur sigma applied to magnitude before peak search (C++ default 0.5).
     pub smoothing_sigma: f32,
-    /// Apply a Hann window before the FFT (recommended for real images).
-    pub window: bool,
     /// Optional directory to also dump pipeline-stage images into.
     pub stages_dir: Option<PathBuf>,
 }
@@ -64,7 +62,6 @@ impl Analyse {
             self.min_frequency,
             self.max_frequency,
             self.smoothing_sigma as vernier_core::Real,
-            self.window,
         )
         .map_err(|e| format!("detection failed: {e:?}"))?;
 
@@ -109,7 +106,13 @@ impl Analyse {
     /// Dumps the spectrum + fringe stage images, reusing the inspect machinery
     /// path conceptually. Kept minimal here: writes the input and FFT magnitude
     /// so the user has the "control images" the C++ example shows.
-    fn dump_stages(&self, img: &crate::imageio::LoadedImage, width: usize, height: usize, dir: &Path) -> Result<(), String> {
+    fn dump_stages(
+        &self,
+        img: &crate::imageio::LoadedImage,
+        width: usize,
+        height: usize,
+        dir: &Path,
+    ) -> Result<(), String> {
         use crate::pgm;
         std::fs::create_dir_all(dir).map_err(|e| format!("mkdir failed: {e}"))?;
 

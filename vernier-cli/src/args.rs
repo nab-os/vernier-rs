@@ -142,10 +142,6 @@ pub struct AnalyseArgs {
     #[argh(option, default = "0.5")]
     pub smoothing_sigma: f32,
 
-    /// disable the Hann window (windowing is on by default for real images)
-    #[argh(switch)]
-    pub no_window: bool,
-
     /// optional directory to also write control/stage images into
     #[argh(option)]
     pub stages: Option<String>,
@@ -184,11 +180,11 @@ pub struct DetectMegarenaArgs {
     #[argh(option, default = "0.5")]
     pub smoothing_sigma: f32,
 
-    /// disable the Hann window (windowing is on by default for real images)
-    #[argh(switch)]
-    pub no_window: bool,
-
     /// path prefix for debug overlay images (writes <prefix>_spectrum.png and _decoded.png)
     #[argh(option)]
     pub debug_image: Option<String>,
+
+    /// print intermediate detection details (carriers, planes, orientation)
+    #[argh(switch)]
+    pub verbose: bool,
 }
