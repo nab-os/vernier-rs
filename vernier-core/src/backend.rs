@@ -100,6 +100,27 @@ pub trait ComputeBackend {
     /// `vernier-detection`, not here.
     fn extract_phase(&self, buffer: &Self::Buffer2D) -> Result<Self::Buffer2D>;
 
+    /// Applies an annulus mask to put aside low and high frequencies
+    fn annulus_mask(&self, buffer: &mut Self::Buffer2D, min_frequency: usize, max_frequency: usize);
+
+    /// Ports C++ `PatternPhase::peaksSearch` to Rust.
+    /// Applies an annulus mask + Gaussian blur, finds two peaks via half-plane search and
+    /// angular cone isolation, then orders them by signed column frequency.
+    ///
+    /// `buffer` is not modified — implementations work on an internal clone so the
+    /// original complex FFT spectrum is preserved for the subsequent `analyze_at` calls.
+    ///
+    /// Returns `None` if fewer than two valid bins exist (should not happen on any
+    /// non-trivial image).
+    fn peak_search(
+        &self,
+        buffer: &Self::Buffer2D,
+        min_frequency: usize,
+        max_frequency: usize,
+        smoothing_sigma: Real,
+        sigma: Real,
+    ) -> Option<((usize, usize), (usize, usize))>;
+
     /// Returns the flat index and magnitude of the largest-magnitude element.
     ///
     /// A reduction — a parallel `reduce` on the GPU, an `iter` scan on the CPU.
@@ -162,6 +183,40 @@ pub trait ComputeBackend {
         radius: usize,
         min_radius: usize,
     ) -> Result<(usize, Real)>;
+
+    /// Separable 2D Gaussian blur on a real-valued array, in place.
+    fn gaussian_blur_2d(
+        &self,
+        buffer: &mut Self::Buffer2D,
+        width: usize,
+        height: usize,
+        sigma: Real,
+    );
+
+    /// Argmax in the positive-fy half-plane (`sfy >= 0`), mirroring C++
+    /// `PatternPhase::peaksSearch` which zeros the top half of the shifted spectrum
+    /// before calling `maxCoeff`.  The C++ bottom half is `sfy >= 0` (rows ≥ height/2
+    /// in the shifted spectrum).  This matches image 2's case where the near-vertical
+    /// carrier at sfx=1,sfy=-220 is a stronger stray than the true horizontal carrier
+    /// at sfx=73,sfy=2 — excluding sfy<0 prevents that stray from winning.
+    fn halfplane_argmax(
+        &self,
+        buffer: &Self::Buffer2D,
+        width: usize,
+        height: usize,
+    ) -> Option<(usize, usize)>;
+
+    /// Argmax in the positive-fy half-plane (`sfy >= 0`), excluding bins whose
+    /// direction from DC is within `half_width` radians of `center_angle`.
+    ///
+    fn halfplane_argmax_angular_excl(
+        &self,
+        buffer: &Self::Buffer2D,
+        width: usize,
+        height: usize,
+        center_angle: Real,
+        half_width: Real,
+    ) -> Option<(usize, usize)>;
 
     /// Applies a Gaussian band-pass filter centered on a single frequency lobe,
     /// in place on a frequency-domain buffer.

@@ -193,7 +193,6 @@ fn accumulate_cell_pools(
             let cy = fy.round();
             let rx = (fx - cx).abs();
             let ry = (fy - cy).abs();
-            let rad = rx.max(ry);
             let cell = (cx as i64, cy as i64);
             let v = intensity[idx];
             if rx < white_r && ry < white_r {
