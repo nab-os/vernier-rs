@@ -21,14 +21,14 @@
 
 use vernier_core::ComputeBackend;
 use vernier_cpu::CpuBackend;
+use vernier_gpu::GpuBackend;
 
 /// Which compute backend to run with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
     /// The `rustfft`/`ndarray` reference backend.
     Cpu,
-    /// The Vulkano GPU backend (only with the `gpu` feature).
-    #[cfg(feature = "gpu")]
+    /// The Vulkano GPU backend.
     Gpu,
 }
 
@@ -37,7 +37,6 @@ impl BackendKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "cpu" => Some(Self::Cpu),
-            #[cfg(feature = "gpu")]
             "gpu" => Some(Self::Gpu),
             _ => None,
         }
@@ -58,7 +57,7 @@ pub trait BackendTask {
     /// Tasks may duplicate a spectrum before the destructive filter/inverse-FFT
     /// (the two-direction analysis needs this); `ComputeBackend::Buffer2D`
     /// guarantees `Clone`, so no extra bound is required here.
-    fn run<B: ComputeBackend>(&self, backend: &B) -> Self::Output;
+    fn run<B: ComputeBackend>(&self, backend: &mut B) -> Self::Output;
 }
 
 /// Instantiates the backend chosen by `kind` and runs `task` against it.
@@ -67,11 +66,7 @@ pub trait BackendTask {
 /// backend => new arm; nothing else changes.
 pub fn dispatch<T: BackendTask>(kind: BackendKind, task: &T) -> T::Output {
     match kind {
-        BackendKind::Cpu => task.run(&CpuBackend::new()),
-        #[cfg(feature = "gpu")]
-        BackendKind::Gpu => {
-            // task.run(&vernier_gpu::VulkanBackend::new().expect("init GPU"))
-            unimplemented!("vernier-gpu not yet wired in")
-        }
+        BackendKind::Cpu => task.run(&mut CpuBackend::new()),
+        BackendKind::Gpu => task.run(&mut GpuBackend::new()),
     }
 }

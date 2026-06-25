@@ -24,7 +24,8 @@
 //! planes are the small summary.
 
 use vernier_core::buffer::Buffer2D;
-use vernier_core::{ComputeBackend, Real, Result, VernierError};
+use vernier_core::scalar::consts::{PI, TAU};
+use vernier_core::{Complex32, ComputeBackend, Real, Result, VernierError};
 
 use crate::planefit::{PhasePlane, fit_plane_to_unwrapped};
 use crate::unwrap::quarters_unwrap_phase;
@@ -79,7 +80,7 @@ fn analyze_at<B: ComputeBackend>(
     let layout = spectrum.layout();
     let (w, h) = (layout.width, layout.height);
 
-    backend.bandpass_filter(&mut spectrum, cx, cy, sigma)?;
+    backend.bandpass_filter(&mut spectrum, sigma)?;
     backend.ifft2d(&mut spectrum)?;
     let phase_field = backend.extract_phase(&spectrum)?;
 
@@ -116,7 +117,7 @@ fn analyze_at<B: ComputeBackend>(
 /// `sigma` is the band-pass filter width AND determines the angular cone width.
 /// `min_frequency = 0` / `max_frequency = 0` disable the respective annulus bound.
 pub fn analyze_two<B: ComputeBackend>(
-    backend: &B,
+    backend: &mut B,
     buffer: &mut B::Buffer2D,
     sigma: Real,
     min_frequency: usize,
@@ -126,13 +127,30 @@ pub fn analyze_two<B: ComputeBackend>(
 where
     B::Buffer2D: Clone,
 {
+    backend.init()?;
     forward(backend, buffer)?;
     let layout = buffer.layout();
     let (w, h) = (layout.width, layout.height);
 
-    let ((cx1, cy1), (cx2, cy2)) = backend
-        .peak_search(&*buffer, min_frequency, max_frequency, smoothing_sigma, sigma)
-        .ok_or_else(|| VernierError::Backend("no carrier peaks found in spectrum".into()))?;
+    let buffer_peaks = {
+        match backend.peak_search(buffer, min_frequency, max_frequency, smoothing_sigma, sigma) {
+            Ok(buffer) => buffer,
+            Err(err) => {
+                return Err(err);
+            }
+        }
+        .ok_or_else(|| VernierError::Backend("no carrier peaks found in spectrum".into()))?
+    };
+
+    let (cx1, cy1, cx2, cy2) = {
+        let peaks = backend.download(&buffer_peaks)?;
+        (
+            peaks[0].re as usize,
+            peaks[1].re as usize,
+            peaks[2].re as usize,
+            peaks[3].re as usize,
+        )
+    };
 
     eprintln!("peak 1: {},{}", cx1, cy1);
     eprintln!("peak 2: {},{}", cx2, cy2);
@@ -148,46 +166,4 @@ where
         width: w,
         height: h,
     })
-}
-
-/// Single-direction analysis (kept for the 1D periodic case and simple tests).
-///
-/// Forward-transforms, finds the one dominant carrier, runs the chain.
-pub fn analyze_direction<B: ComputeBackend>(
-    backend: &B,
-    mut spectrum: B::Buffer2D,
-    sigma: Real,
-) -> Result<DirectionResult> {
-    let layout = spectrum.layout();
-    let (w, h) = (layout.width, layout.height);
-    let (idx, _mag) = backend.argmax_magnitude_halfplane(&spectrum, 0)?;
-    let (cx, cy) = (idx % w, idx / w);
-    backend.bandpass_filter(&mut spectrum, cx, cy, sigma)?;
-    backend.ifft2d(&mut spectrum)?;
-    let phase_field = backend.extract_phase(&spectrum)?;
-    let data = backend.download(&phase_field)?;
-    let wrapped: Vec<Real> = data.iter().map(|c| c.re as Real).collect();
-    let mut unwrapped = wrapped.clone();
-    quarters_unwrap_phase(&mut unwrapped, w, h);
-    let plane = fit_plane_to_unwrapped(&unwrapped, w, h, 0.5);
-    let peak = plane.peak_location(w, h);
-    Ok(DirectionResult {
-        plane,
-        peak,
-        peak_bin: (cx, cy),
-    })
-}
-
-/// Convenience single-direction analyze that forward-transforms first.
-pub fn analyze<B: ComputeBackend>(
-    backend: &B,
-    spectrum: &mut B::Buffer2D,
-    sigma: Real,
-) -> Result<DirectionResult>
-where
-    B::Buffer2D: Clone,
-{
-    forward(backend, spectrum)?;
-    let spectrum = spectrum.clone();
-    analyze_direction(backend, spectrum, sigma)
 }

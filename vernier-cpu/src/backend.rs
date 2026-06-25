@@ -32,64 +32,8 @@ impl CpuBackend {
             planner: RefCell::new(Fft2dPlanner::new()),
         }
     }
-}
 
-impl Default for CpuBackend {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ComputeBackend for CpuBackend {
-    type Buffer2D = CpuBuffer;
-
-    fn upload(&self, data: &[Complex32], layout: BufferLayout) -> Result<Self::Buffer2D> {
-        if !layout.is_contiguous() {
-            return Err(VernierError::NonContiguous {
-                stride: layout.row_stride,
-                width: layout.width,
-            });
-        }
-        CpuBuffer::from_slice(data, layout).ok_or(VernierError::ShapeMismatch {
-            lhs: layout,
-            rhs: BufferLayout::packed(layout.width, layout.height),
-        })
-    }
-
-    fn download(&self, buffer: &Self::Buffer2D) -> Result<Vec<Complex32>> {
-        Ok(buffer.as_slice().to_vec())
-    }
-
-    fn fft2d(&self, buffer: &mut Self::Buffer2D) -> Result<()> {
-        self.planner.borrow_mut().forward(buffer);
-        Ok(())
-    }
-
-    fn ifft2d(&self, buffer: &mut Self::Buffer2D) -> Result<()> {
-        self.planner.borrow_mut().inverse(buffer);
-        Ok(())
-    }
-
-    fn extract_phase(&self, buffer: &Self::Buffer2D) -> Result<Self::Buffer2D> {
-        // Wrapped phase atan2(im, re) into the re lane; im zeroed. The parallel
-        // per-pixel kernel on the GPU; a plain map here.
-        let phases: Vec<Complex32> = buffer
-            .as_slice()
-            .iter()
-            .map(|c| Complex32::new(c.arg() as f32, 0.0))
-            .collect();
-        CpuBuffer::from_slice(&phases, buffer.layout()).ok_or(VernierError::ShapeMismatch {
-            lhs: buffer.layout(),
-            rhs: buffer.layout(),
-        })
-    }
-
-    fn annulus_mask(
-        &self,
-        spectrum: &mut Self::Buffer2D,
-        min_frequency: usize,
-        max_frequency: usize,
-    ) {
+    fn annulus_mask(&self, spectrum: &mut CpuBuffer, min_frequency: usize, max_frequency: usize) {
         let layout = spectrum.layout();
         let (width, height) = (layout.width, layout.height);
         let min_r2 = (min_frequency * min_frequency) as Real;
@@ -118,68 +62,7 @@ impl ComputeBackend for CpuBackend {
             }
         }
     }
-
-    fn peak_search(
-        &self,
-        buffer: &Self::Buffer2D,
-        min_frequency: usize,
-        max_frequency: usize,
-        smoothing_sigma: Real,
-        sigma: Real,
-    ) -> Option<((usize, usize), (usize, usize))> {
-        let mut spectrum = buffer.clone();
-        let layout = spectrum.layout();  // must read before mutable borrows below
-        let (width, height) = (layout.width, layout.height);
-
-        // Convert complex spectrum to magnitude in-place (re = |z|, im = 0).
-        // All subsequent operations (annulus mask, blur, argmax) work on real
-        // magnitudes stored in the .re field.
-        for v in spectrum.as_mut_slice().iter_mut() {
-            v.re = (v.re * v.re + v.im * v.im).sqrt();
-            v.im = 0.0;
-        }
-
-        self.annulus_mask(&mut spectrum, min_frequency, max_frequency);
-
-        let signed = |f: usize, n: usize| -> isize {
-            let f = f as isize;
-            let n = n as isize;
-            if f > n / 2 { f - n } else { f }
-        };
-
-        // Gaussian blur on magnitude (C++ cv::GaussianBlur).
-        if smoothing_sigma > 0.0 {
-            self.gaussian_blur_2d(&mut spectrum, width, height, smoothing_sigma);
-        }
-
-        // Peak 1: largest magnitude in canonical half-plane.
-        let (cx1, cy1) = self.halfplane_argmax(&spectrum, width, height)?;
-        let sfx1 = signed(cx1, width) as Real;
-        let sfy1 = signed(cy1, height) as Real;
-
-        // Angular cone exclusion around peak 1's direction (C++ applyAngularCut).
-        let distance = (sfx1 * sfx1 + sfy1 * sfy1).sqrt();
-        let center_angle = sfy1.atan2(sfx1);
-        // C++: widthAngle = 2 * atan2(3*sigma, distance); we use half that as the
-        // exclusion threshold so a bin is excluded when |angle_diff| < half_width.
-        let half_width = (3.0 * sigma).atan2(distance);
-
-        // Peak 2: largest magnitude outside the angular cone.
-        let (cx2, cy2) =
-            self.halfplane_argmax_angular_excl(&spectrum, width, height, center_angle, half_width)?;
-
-        // Order so the larger signed column frequency is direction 1 (C++ convention:
-        // swap if mainPeak1.x < mainPeak2.x in the shifted spectrum, equiv. to
-        // sfx1 < sfx2 in unshifted).
-        let sfx2 = signed(cx2, width) as Real;
-        if sfx1 >= sfx2 {
-            Some(((cx1, cy1), (cx2, cy2)))
-        } else {
-            Some(((cx2, cy2), (cx1, cy1)))
-        }
-    }
-
-    fn argmax_magnitude(&self, buffer: &Self::Buffer2D) -> Result<(usize, Real)> {
+    fn argmax_magnitude(&self, buffer: &CpuBuffer) -> Result<(usize, Real)> {
         // Reduction: largest |z|^2 (cheaper than |z|, same ordering).
         let mut best_idx = 0usize;
         let mut best = Real::NEG_INFINITY;
@@ -195,7 +78,7 @@ impl ComputeBackend for CpuBackend {
 
     fn argmax_magnitude_halfplane(
         &self,
-        buffer: &Self::Buffer2D,
+        buffer: &CpuBuffer,
         min_radius: usize,
     ) -> Result<(usize, Real)> {
         let layout = buffer.layout();
@@ -240,7 +123,7 @@ impl ComputeBackend for CpuBackend {
 
     fn argmax_magnitude_halfplane_excluding(
         &self,
-        buffer: &Self::Buffer2D,
+        buffer: &CpuBuffer,
         exclude_x: usize,
         exclude_y: usize,
         radius: usize,
@@ -294,14 +177,283 @@ impl ComputeBackend for CpuBackend {
         Ok((best_idx, best.sqrt()))
     }
 
-    /// Separable 2D Gaussian blur on a real-valued array, in place.
-    fn gaussian_blur_2d(
+    fn halfplane_argmax(
         &self,
-        buffer: &mut Self::Buffer2D,
+        buffer: &CpuBuffer,
         width: usize,
         height: usize,
+    ) -> Option<(usize, usize)> {
+        let signed = |f: usize, n: usize| -> isize {
+            let f = f as isize;
+            let n = n as isize;
+            if f > n / 2 { f - n } else { f }
+        };
+        let mut best = Real::NEG_INFINITY;
+        let mut result = None;
+        for fy in 0..height {
+            let sfy = signed(fy, height);
+            if sfy < 0 {
+                continue;
+            }
+            for fx in 0..width {
+                let m = buffer.as_slice()[fy * width + fx].re;
+                if m > best {
+                    best = m;
+                    result = Some((fx, fy));
+                }
+            }
+        }
+        result
+    }
+
+    fn halfplane_argmax_angular_excl(
+        &self,
+        buffer: &CpuBuffer,
+        width: usize,
+        height: usize,
+        center_angle: Real,
+        half_width: Real,
+    ) -> Option<(usize, usize)> {
+        let signed = |f: usize, n: usize| -> isize {
+            let f = f as isize;
+            let n = n as isize;
+            if f > n / 2 { f - n } else { f }
+        };
+        let mut best = Real::NEG_INFINITY;
+        let mut result = None;
+        for fy in 0..height {
+            let sfy_i = signed(fy, height);
+            if sfy_i < 0 {
+                continue;
+            }
+            let sfy = sfy_i as Real;
+            for fx in 0..width {
+                let sfx_i = signed(fx, width);
+                let sfx = sfx_i as Real;
+                // Angular difference from center (shortest arc, in (-π, π]).
+                let angle = sfy.atan2(sfx);
+                let diff = ((angle - center_angle + PI).rem_euclid(TAU)) - PI;
+                if diff.abs() < half_width {
+                    continue;
+                }
+                let m = buffer.as_slice()[fy * width + fx].re;
+                if m > best {
+                    best = m;
+                    result = Some((fx, fy));
+                }
+            }
+        }
+        result
+    }
+}
+
+impl Default for CpuBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ComputeBackend for CpuBackend {
+    type Buffer2D = CpuBuffer;
+
+    fn upload(&self, data: &[Complex32], layout: BufferLayout) -> Result<Self::Buffer2D> {
+        if !layout.is_contiguous() {
+            return Err(VernierError::NonContiguous {
+                stride: layout.row_stride,
+                width: layout.width,
+            });
+        }
+        CpuBuffer::from_slice(data, layout).ok_or(VernierError::ShapeMismatch {
+            lhs: layout,
+            rhs: BufferLayout::packed(layout.width, layout.height),
+        })
+    }
+
+    fn download(&self, buffer: &Self::Buffer2D) -> Result<Vec<Complex32>> {
+        Ok(buffer.as_slice().to_vec())
+    }
+
+    fn fft2d(&self, buffer: &mut Self::Buffer2D) -> Result<()> {
+        self.planner.borrow_mut().forward(buffer);
+        Ok(())
+    }
+
+    fn ifft2d(&self, buffer: &mut Self::Buffer2D) -> Result<()> {
+        self.planner.borrow_mut().inverse(buffer);
+        Ok(())
+    }
+
+    fn extract_phase(&self, buffer: &CpuBuffer) -> Result<CpuBuffer> {
+        // Wrapped phase atan2(im, re) into the re lane; im zeroed. The parallel
+        // per-pixel kernel on the GPU; a plain map here.
+        let phases: Vec<Complex32> = buffer
+            .as_slice()
+            .iter()
+            .map(|c| Complex32::new(c.arg() as f32, 0.0))
+            .collect();
+        CpuBuffer::from_slice(&phases, buffer.layout()).ok_or(VernierError::ShapeMismatch {
+            lhs: buffer.layout(),
+            rhs: buffer.layout(),
+        })
+    }
+
+    fn peak_search(
+        &self,
+        buffer: &mut Self::Buffer2D,
+        min_frequency: usize,
+        max_frequency: usize,
+        smoothing_sigma: Real,
         sigma: Real,
-    ) {
+    ) -> Result<Option<Self::Buffer2D>> {
+        let mut spectrum = buffer.clone();
+        let layout = spectrum.layout(); // must read before mutable borrows below
+        let (width, height) = (layout.width, layout.height);
+
+        // Convert complex spectrum to magnitude in-place (re = |z|, im = 0).
+        // All subsequent operations (annulus mask, blur, argmax) work on real
+        // magnitudes stored in the .re field.
+        for v in spectrum.as_mut_slice().iter_mut() {
+            v.re = (v.re * v.re + v.im * v.im).sqrt();
+            v.im = 0.0;
+        }
+
+        self.annulus_mask(&mut spectrum, min_frequency, max_frequency);
+
+        let signed = |f: usize, n: usize| -> isize {
+            let f = f as isize;
+            let n = n as isize;
+            if f > n / 2 { f - n } else { f }
+        };
+
+        // Gaussian blur on magnitude (C++ cv::GaussianBlur).
+        if smoothing_sigma > 0.0 {
+            self.gaussian_blur_2d(&mut spectrum, smoothing_sigma)
+                .unwrap();
+        }
+
+        // Peak 1: largest magnitude in canonical half-plane.
+        let (cx1, cy1) = {
+            if let Some(a) = self.halfplane_argmax(&spectrum, width, height) {
+                a
+            } else {
+                return Ok(None);
+            }
+        };
+        let sfx1 = signed(cx1, width) as Real;
+        let sfy1 = signed(cy1, height) as Real;
+
+        // Angular cone exclusion around peak 1's direction (C++ applyAngularCut).
+        let distance = (sfx1 * sfx1 + sfy1 * sfy1).sqrt();
+        let center_angle = sfy1.atan2(sfx1);
+        // C++: widthAngle = 2 * atan2(3*sigma, distance); we use half that as the
+        // exclusion threshold so a bin is excluded when |angle_diff| < half_width.
+        let half_width = (3.0 * sigma).atan2(distance);
+
+        // Restrict peak 2 search to a frequency band around peak 1's radius so that
+        // sub-harmonics or harmonics at very different frequencies don't win over the
+        // true perpendicular carrier (which should be at the same spatial frequency for
+        // a square grid).
+        let r_min_sq = (distance * 0.5) * (distance * 0.5);
+        let r_max_sq = (distance * 2.0) * (distance * 2.0);
+        for fy in 0..height {
+            let sfy_i = signed(fy, height) as Real;
+            for fx in 0..width {
+                let sfx_i = signed(fx, width) as Real;
+                let r_sq = sfx_i * sfx_i + sfy_i * sfy_i;
+                if r_sq < r_min_sq || r_sq > r_max_sq {
+                    spectrum.as_mut_slice()[fy * width + fx].re = 0.0;
+                }
+            }
+        }
+
+        // Peak 2: largest magnitude outside the angular cone.
+        let (cx2, cy2) = {
+            if let Some(a) = self.halfplane_argmax_angular_excl(
+                &spectrum,
+                width,
+                height,
+                center_angle,
+                half_width,
+            ) {
+                a
+            } else {
+                return Ok(None);
+            }
+        };
+
+        // Order so the larger signed column frequency is direction 1 (C++ convention:
+        // swap if mainPeak1.x < mainPeak2.x in the shifted spectrum, equiv. to
+        // sfx1 < sfx2 in unshifted).
+        let sfx2 = signed(cx2, width) as Real;
+        if sfx1 >= sfx2 {
+            Ok(CpuBuffer::from_slice(
+                &[
+                    Complex32 {
+                        re: cx1 as f32,
+                        im: 0.0,
+                    },
+                    Complex32 {
+                        re: cy1 as f32,
+                        im: 0.0,
+                    },
+                    Complex32 {
+                        re: cx2 as f32,
+                        im: 0.0,
+                    },
+                    Complex32 {
+                        re: cy2 as f32,
+                        im: 0.0,
+                    },
+                ],
+                BufferLayout {
+                    width: 2,
+                    height: 2,
+                    row_stride: 2,
+                },
+            ))
+        } else {
+            Ok(CpuBuffer::from_slice(
+                &[
+                    Complex32 {
+                        re: cx2 as f32,
+                        im: 0.0,
+                    },
+                    Complex32 {
+                        re: cy2 as f32,
+                        im: 0.0,
+                    },
+                    Complex32 {
+                        re: cx1 as f32,
+                        im: 0.0,
+                    },
+                    Complex32 {
+                        re: cy1 as f32,
+                        im: 0.0,
+                    },
+                ],
+                BufferLayout {
+                    width: 2,
+                    height: 2,
+                    row_stride: 2,
+                },
+            ))
+        }
+    }
+
+    fn filter(
+        &self,
+        buffer: &mut Self::Buffer2D,
+        min_frequency: usize,
+        max_frequency: usize,
+    ) -> Result<()> {
+        self.annulus_mask(buffer, min_frequency, max_frequency);
+        Ok(())
+    }
+
+    /// Separable 2D Gaussian blur on a real-valued array, in place.
+    fn gaussian_blur_2d(&self, buffer: &mut Self::Buffer2D, sigma: Real) -> Result<()> {
+        let width = buffer.layout().width;
+        let height = buffer.layout().height;
         let radius = (3.0 * sigma).ceil() as usize;
         let n = 2 * radius + 1;
         let kernel: Vec<Real> = (0..n)
@@ -344,87 +496,17 @@ impl ComputeBackend for CpuBackend {
                 buffer.as_mut_slice()[r * width + c].re = if w > 0.0 { v / w } else { 0.0 };
             }
         }
+
+        Ok(())
     }
 
-    fn halfplane_argmax(
-        &self,
-        buffer: &Self::Buffer2D,
-        width: usize,
-        height: usize,
-    ) -> Option<(usize, usize)> {
-        let signed = |f: usize, n: usize| -> isize {
-            let f = f as isize;
-            let n = n as isize;
-            if f > n / 2 { f - n } else { f }
-        };
-        let mut best = Real::NEG_INFINITY;
-        let mut result = None;
-        for fy in 0..height {
-            let sfy = signed(fy, height);
-            if sfy < 0 {
-                continue;
-            }
-            for fx in 0..width {
-                let m = buffer.as_slice()[fy * width + fx].re;
-                if m > best {
-                    best = m;
-                    result = Some((fx, fy));
-                }
-            }
-        }
-        result
-    }
-
-    fn halfplane_argmax_angular_excl(
-        &self,
-        buffer: &Self::Buffer2D,
-        width: usize,
-        height: usize,
-        center_angle: Real,
-        half_width: Real,
-    ) -> Option<(usize, usize)> {
-        let signed = |f: usize, n: usize| -> isize {
-            let f = f as isize;
-            let n = n as isize;
-            if f > n / 2 { f - n } else { f }
-        };
-        let mut best = Real::NEG_INFINITY;
-        let mut result = None;
-        for fy in 0..height {
-            let sfy_i = signed(fy, height);
-            if sfy_i < 0 {
-                continue;
-            }
-            let sfy = sfy_i as Real;
-            for fx in 0..width {
-                let sfx_i = signed(fx, width);
-                let sfx = sfx_i as Real;
-                // Angular difference from center (shortest arc, in (-π, π]).
-                let angle = sfy.atan2(sfx);
-                let diff = ((angle - center_angle + PI).rem_euclid(TAU)) - PI;
-                if diff.abs() < half_width {
-                    continue;
-                }
-                let m = buffer.as_slice()[fy * width + fx].re;
-                if m > best {
-                    best = m;
-                    result = Some((fx, fy));
-                }
-            }
-        }
-        result
-    }
-
-    fn bandpass_filter(
-        &self,
-        buffer: &mut Self::Buffer2D,
-        center_x: usize,
-        center_y: usize,
-        sigma: Real,
-    ) -> Result<()> {
+    fn bandpass_filter(&self, buffer: &mut CpuBuffer, sigma: Real) -> Result<()> {
         let layout = buffer.layout();
         let (w, h) = (layout.width, layout.height);
         let two_sigma_sq = 2.0 * sigma * sigma;
+
+        let center_x = w / 2;
+        let center_y = h / 2;
 
         // Frequency-bin distance must wrap: bin 0 and bin w-1 are adjacent in a
         // DFT (the spectrum is periodic). Without wraparound, a lobe near the

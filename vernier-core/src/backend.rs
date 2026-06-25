@@ -49,6 +49,16 @@ pub trait ComputeBackend {
 
     // --- Host <-> device crossings (explicit and rare) ----------------------
 
+    /// Initializes the backend before queueing operations
+    fn init(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Exec queued operations
+    fn exec(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Uploads contiguous, row-major complex data into a device buffer.
     ///
     /// `data.len()` must equal `layout.len()` and `layout` must be contiguous;
@@ -87,162 +97,30 @@ pub trait ComputeBackend {
     /// In-place 2D inverse FFT of `buffer`.
     fn ifft2d(&self, buffer: &mut Self::Buffer2D) -> Result<()>;
 
-    /// Extracts the wrapped phase `atan2(im, re)` of each element into a new
-    /// buffer (stored in the `re` lane; `im` set to zero), staying on-device.
-    ///
-    /// In the real pipeline this runs on the **spatial-domain complex field**
-    /// produced by [`ifft2d`](ComputeBackend::ifft2d) after a single lobe has
-    /// been isolated by [`bandpass_filter`](ComputeBackend::bandpass_filter) —
-    /// its argument is the wrapped phase map of one pattern direction (André et
-    /// al. 2021, Fig. 2c). It is the embarrassingly-parallel per-pixel stage: a
-    /// one-line kernel on the GPU, a `map` on the CPU. Phase *unwrapping* and the
-    /// least-squares *plane fit* that follow are data-dependent and live in
-    /// `vernier-detection`, not here.
     fn extract_phase(&self, buffer: &Self::Buffer2D) -> Result<Self::Buffer2D>;
 
-    /// Applies an annulus mask to put aside low and high frequencies
-    fn annulus_mask(&self, buffer: &mut Self::Buffer2D, min_frequency: usize, max_frequency: usize);
-
-    /// Ports C++ `PatternPhase::peaksSearch` to Rust.
-    /// Applies an annulus mask + Gaussian blur, finds two peaks via half-plane search and
-    /// angular cone isolation, then orders them by signed column frequency.
-    ///
-    /// `buffer` is not modified — implementations work on an internal clone so the
-    /// original complex FFT spectrum is preserved for the subsequent `analyze_at` calls.
-    ///
-    /// Returns `None` if fewer than two valid bins exist (should not happen on any
-    /// non-trivial image).
     fn peak_search(
         &self,
-        buffer: &Self::Buffer2D,
+        buffer: &mut Self::Buffer2D,
         min_frequency: usize,
         max_frequency: usize,
         smoothing_sigma: Real,
         sigma: Real,
-    ) -> Option<((usize, usize), (usize, usize))>;
+    ) -> Result<Option<Self::Buffer2D>>;
 
-    /// Returns the flat index and magnitude of the largest-magnitude element.
-    ///
-    /// A reduction — a parallel `reduce` on the GPU, an `iter` scan on the CPU.
-    /// Used to locate the fundamental-frequency peak after [`fft2d`].
-    /// The index is row-major per the buffer's [`BufferLayout`].
-    ///
-    /// [`fft2d`]: ComputeBackend::fft2d
-    fn argmax_magnitude(&self, buffer: &Self::Buffer2D) -> Result<(usize, Real)>;
-
-    /// Like [`argmax_magnitude`](ComputeBackend::argmax_magnitude), but restricts
-    /// the search to one half of frequency space so it deterministically picks
-    /// one lobe of each conjugate pair.
-    ///
-    /// A real image's spectrum is Hermitian: every peak at signed frequency
-    /// `(fx, fy)` has an equal-magnitude conjugate at `(-fx, -fy)`. A plain
-    /// global argmax breaks that tie arbitrarily, and landing on the negative
-    /// twin negates the recovered phase gradient — reflecting the measured
-    /// orientation to `π − θ`. To avoid this, the search is confined to the
-    /// canonical half-plane `sfx > 0, or (sfx == 0 and sfy > 0)`, where `sfx`,
-    /// `sfy` are the *signed* frequencies (bins above N/2 are negative). DC is
-    /// excluded.
-    ///
-    /// On the GPU this is the same reduction as `argmax_magnitude` with a
-    /// per-bin predicate — still a trivial masked reduction kernel.
-    /// Finds the largest-magnitude bin in the canonical half-plane, **excluding
-    /// a low-frequency disk** of radius `min_radius` bins around DC.
-    ///
-    /// The low-frequency exclusion is essential on real images: lighting falloff,
-    /// vignetting, and overall brightness put enormous energy in the bins
-    /// immediately around DC — often far exceeding the carrier peak. Excluding
-    /// only the single DC bin (the naive approach) makes the search lock onto
-    /// this lighting content (e.g. bin (0,1)) instead of the pattern carrier. A
-    /// `min_radius` that clears the lighting skirt but stays well below the
-    /// carrier radius (the carrier sits at `image_size / period_px` bins)
-    /// recovers the true peak. `min_radius = 0` reduces to DC-only exclusion.
-    ///
-    /// See [`argmax_magnitude_halfplane`](ComputeBackend::argmax_magnitude_halfplane)
-    /// for the half-plane / conjugate-disambiguation rationale.
-    fn argmax_magnitude_halfplane(
-        &self,
-        buffer: &Self::Buffer2D,
-        min_radius: usize,
-    ) -> Result<(usize, Real)>;
-
-    /// Like [`argmax_magnitude_halfplane`](ComputeBackend::argmax_magnitude_halfplane),
-    /// but ignores bins within `radius` (in signed-frequency bins, Chebyshev
-    /// distance) of `(exclude_x, exclude_y)`.
-    ///
-    /// Used to find the *second* carrier peak of a 2D grid: after locating the
-    /// first direction's peak, its neighborhood is masked so the search returns
-    /// the perpendicular direction's peak instead of a sideband of the first.
-    /// `exclude_x`/`exclude_y` are bin indices (not signed); the comparison is
-    /// done in signed-frequency space so the mask follows the lobe correctly
-    /// near the Nyquist edge.
-    fn argmax_magnitude_halfplane_excluding(
-        &self,
-        buffer: &Self::Buffer2D,
-        exclude_x: usize,
-        exclude_y: usize,
-        radius: usize,
-        min_radius: usize,
-    ) -> Result<(usize, Real)>;
-
-    /// Separable 2D Gaussian blur on a real-valued array, in place.
-    fn gaussian_blur_2d(
+    fn filter(
         &self,
         buffer: &mut Self::Buffer2D,
-        width: usize,
-        height: usize,
-        sigma: Real,
-    );
+        min_frequency: usize,
+        max_frequency: usize,
+    ) -> Result<()>;
 
-    /// Argmax in the positive-fy half-plane (`sfy >= 0`), mirroring C++
-    /// `PatternPhase::peaksSearch` which zeros the top half of the shifted spectrum
-    /// before calling `maxCoeff`.  The C++ bottom half is `sfy >= 0` (rows ≥ height/2
-    /// in the shifted spectrum).  This matches image 2's case where the near-vertical
-    /// carrier at sfx=1,sfy=-220 is a stronger stray than the true horizontal carrier
-    /// at sfx=73,sfy=2 — excluding sfy<0 prevents that stray from winning.
-    fn halfplane_argmax(
-        &self,
-        buffer: &Self::Buffer2D,
-        width: usize,
-        height: usize,
-    ) -> Option<(usize, usize)>;
-
-    /// Argmax in the positive-fy half-plane (`sfy >= 0`), excluding bins whose
-    /// direction from DC is within `half_width` radians of `center_angle`.
-    ///
-    fn halfplane_argmax_angular_excl(
-        &self,
-        buffer: &Self::Buffer2D,
-        width: usize,
-        height: usize,
-        center_angle: Real,
-        half_width: Real,
-    ) -> Option<(usize, usize)>;
+    /// Separable 2D Gaussian blur on a real-valued array, in place.
+    fn gaussian_blur_2d(&self, buffer: &mut Self::Buffer2D, sigma: Real) -> Result<()>;
 
     /// Applies a Gaussian band-pass filter centered on a single frequency lobe,
     /// in place on a frequency-domain buffer.
-    ///
-    /// This is the step that isolates one spectral lobe before the inverse FFT
-    /// (André et al. 2020/2021). The filter is a Gaussian in frequency space:
-    /// each bin `(fx, fy)` is multiplied by
-    /// `exp(-((fx-cx)² + (fy-cy)²) / (2σ²))`, where `(cx, cy)` is the lobe center
-    /// and `sigma` its width in bins.
-    ///
-    /// Critically, only the lobe around `(center_x, center_y)` is kept — its
-    /// complex-conjugate mirror is *not* re-added. Excluding the conjugate is
-    /// what breaks the Hermitian symmetry of a real image's spectrum, so the
-    /// subsequent [`ifft2d`](ComputeBackend::ifft2d) yields a genuinely complex
-    /// field whose argument is the wrapped phase. Keeping both lobes would give a
-    /// real-valued (cosine) result with no usable phase.
-    ///
-    /// On the GPU this is a per-bin multiply — a trivial kernel. On the CPU it is
-    /// a `map` over the buffer.
-    fn bandpass_filter(
-        &self,
-        buffer: &mut Self::Buffer2D,
-        center_x: usize,
-        center_y: usize,
-        sigma: Real,
-    ) -> Result<()>;
+    fn bandpass_filter(&self, buffer: &mut Self::Buffer2D, sigma: Real) -> Result<()>;
 
     /// A short human-readable name for the active backend (e.g. `"cpu-rustfft"`,
     /// `"gpu-vulkano"`). For logs and the benchmark harness.

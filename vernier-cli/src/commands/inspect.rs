@@ -23,8 +23,8 @@ use vernier_core::buffer::BufferLayout;
 use vernier_core::{Complex32, ComputeBackend, Real};
 use vernier_cpu::CpuBackend;
 use vernier_detection::planefit::fit_plane;
-use vernier_patterns::periodic::Periodic;
 use vernier_patterns::PatternPose;
+use vernier_patterns::periodic::Periodic;
 
 use crate::pgm;
 
@@ -94,7 +94,9 @@ impl Inspect {
         )?;
 
         // --- Stage 3: apply band-pass, save the isolated lobe ---
-        backend.bandpass_filter(&mut buf, cx, cy, self.sigma as Real).unwrap();
+        backend
+            .bandpass_filter(&mut buf, cx, cy, self.sigma as Real)
+            .unwrap();
         let filtered = backend.download(&buf).unwrap();
         let fmag: Vec<f64> = filtered
             .iter()

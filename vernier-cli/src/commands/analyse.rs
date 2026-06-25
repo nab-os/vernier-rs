@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 use vernier_core::buffer::BufferLayout;
 use vernier_core::{Complex32, ComputeBackend};
 use vernier_cpu::CpuBackend;
-use vernier_detection::spectrum::analyze_two;
 
 use crate::imageio::load_grayscale;
 

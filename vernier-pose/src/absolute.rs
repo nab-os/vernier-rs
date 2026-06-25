@@ -135,6 +135,11 @@ pub struct ExtractedCode {
     pub x_k_center: i64,
     /// LFSR bit index of the image centre along direction 2.
     pub y_k_center: i64,
+    /// Correct bitSeq period-shift for direction 1 (what C++ `findCodePosition`
+    /// returns for the MSB=1 / forward direction, corrected for coding residue).
+    pub x_periodshift: i64,
+    /// Correct bitSeq period-shift for direction 2.
+    pub y_periodshift: i64,
 }
 
 // ─── Internal types ──────────────────────────────────────────────────────────
@@ -627,38 +632,50 @@ pub fn extract_code(
     };
 
     // ─────────────────────────────────────────────────────────────
-    // K_center derivation (matches C++ findCodePosition / maxCol):
+    // K_center and period-shift derivation:
     //
-    // C++ bitSeq places LFSR bit k at position 3k+34.  The cross-
-    // correlation peak maxCol is the bitSeq index aligned with the
-    // phase-origin triple (cx=0, "global triple 0").
+    // C++ bitSeq places LFSR bit k at position 3*(k+order-1)+1 = 3k+3*(n-1)+1.
+    // The physical coding residue `orient.coding1` (0/1/2) shifts which bitSeq
+    // column aligns with the image-centre triple (T=0), giving:
     //
-    // For msb=true  (forward LFSR): k_T0 = k1 - first_triple
-    //   maxCol = 3*k_T0 + 34 - 3  →  K_center = k_T0 - 1
+    //   For msb=true  (forward LFSR):
+    //     k_T0      = k1 - first_triple   (LFSR bit at physical triple T=0)
+    //     periodshift = 3*k_T0 + 3*(n-1)+1 - coding1
     //
-    // For msb=false (reversed LFSR): k_T0 = k1 + first_triple + n - 1
-    //   maxCol = 3*k_T0 + 36       →  K_center = k_T0
+    //   For msb=false (reversed LFSR):
+    //     k_T0      = k1 + first_triple + n - 1   (same formula, reversed window)
+    //     periodshift = 3*(k_T0 + n)               (reversal sets eff. coding=1)
     //
-    // (The ±1 asymmetry comes from which neighbour coding slot the
-    // cross-correlation centres on when the image-centre triple is
-    // not a coding position itself.)
-    let x_k_center = if msb1 {
+    // K_center = k_T0 - 1 for msb=true (legacy field; periodshift is preferred).
+    //
+    // For msb=true (forward LFSR): ps = 3*k_t0 + 3*(n-1) + 1 - coding_phys
+    // For msb=false (reversed LFSR): ps = 3*k_t0 + 3*(n-1) + 1 + coding_phys
+    // The sign of coding_phys flips because reversing the LFSR reverses the
+    // direction of the coding-residue offset within each 3-cell triple.
+    let (x_k_center, x_periodshift) = if msb1 {
         let k1 = widx.locate(&x_window)? as i64;
-        k1 - x_first_triple - 1
+        let k_t0 = k1 - x_first_triple;
+        let ps = 3 * k_t0 + (3 * (n as i64 - 1) + 1) - orient.coding1;
+        (k_t0 - 1, ps)
     } else {
         x_window.reverse();
         let k1 = widx.locate(&x_window)? as i64;
-        k1 + x_first_triple + n as i64 - 1
+        let k_t0 = k1 + x_first_triple + n as i64 - 1;
+        let ps = 3 * k_t0 + (3 * (n as i64 - 1) + 1) + orient.coding1;
+        (k_t0 - 1, ps)
     };
 
-    let y_k_center = if msb2 {
+    let (y_k_center, y_periodshift) = if msb2 {
         let k1 = widx.locate(&y_window)? as i64;
-        k1 - y_first_triple - 1
+        let k_t0 = k1 - y_first_triple;
+        let ps = 3 * k_t0 + (3 * (n as i64 - 1) + 1) - orient.coding2;
+        (k_t0 - 1, ps)
     } else {
         y_window.reverse();
-        let k1_opt = widx.locate(&y_window);
-        let k1 = k1_opt? as i64;
-        k1 + y_first_triple + n as i64 - 1
+        let k1 = widx.locate(&y_window)? as i64;
+        let k_t0 = k1 + y_first_triple + n as i64 - 1;
+        let ps = 3 * k_t0 + (3 * (n as i64 - 1) + 1) + orient.coding2;
+        (k_t0 - 1, ps)
     };
 
     Some(ExtractedCode {
@@ -671,6 +688,8 @@ pub fn extract_code(
         msb2,
         x_k_center,
         y_k_center,
+        x_periodshift,
+        y_periodshift,
     })
 }
 
