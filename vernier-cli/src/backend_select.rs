@@ -53,11 +53,7 @@ pub trait BackendTask {
     type Output;
 
     /// Executes the task against a concrete backend `B`.
-    ///
-    /// Tasks may duplicate a spectrum before the destructive filter/inverse-FFT
-    /// (the two-direction analysis needs this); `ComputeBackend::Buffer2D`
-    /// guarantees `Clone`, so no extra bound is required here.
-    fn run<B: ComputeBackend>(&self, backend: &mut B) -> Self::Output;
+    fn run<B: ComputeBackend>(&self, backend: &B) -> Self::Output;
 }
 
 /// Instantiates the backend chosen by `kind` and runs `task` against it.
@@ -66,7 +62,7 @@ pub trait BackendTask {
 /// backend => new arm; nothing else changes.
 pub fn dispatch<T: BackendTask>(kind: BackendKind, task: &T) -> T::Output {
     match kind {
-        BackendKind::Cpu => task.run(&mut CpuBackend::new()),
-        BackendKind::Gpu => task.run(&mut GpuBackend::new()),
+        BackendKind::Cpu => task.run(&CpuBackend::new()),
+        BackendKind::Gpu => task.run(&GpuBackend::new()),
     }
 }

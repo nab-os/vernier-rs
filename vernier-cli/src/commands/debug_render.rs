@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use vernier_core::buffer::BufferLayout;
-use vernier_core::{Complex32, ComputeBackend};
+use vernier_core::{Complex32, ComputeBackend, ComputeJob};
 use vernier_cpu::CpuBackend;
 use vernier_detection::spectrum::Detection;
 
@@ -41,7 +41,11 @@ pub fn render_spectrum_debug(
     let layout = BufferLayout::packed(width, height);
     let complex: Vec<Complex32> = image_gray.iter().map(|&v| Complex32::new(v as f32, 0.0)).collect();
     let mut buf = backend.upload(&complex, layout).map_err(|e| format!("{e:?}"))?;
-    backend.fft2d(&mut buf).map_err(|e| format!("{e:?}"))?;
+    {
+        let mut job = backend.begin().map_err(|e| format!("{e:?}"))?;
+        job.fft2d(&mut buf).map_err(|e| format!("{e:?}"))?;
+        job.submit().map_err(|e| format!("{e:?}"))?;
+    }
     let spec = backend.download(&buf).map_err(|e| format!("{e:?}"))?;
 
     // Log magnitude, fftshifted, normalized to 0..1 for the background.

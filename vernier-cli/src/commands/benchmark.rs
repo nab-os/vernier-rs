@@ -1,31 +1,32 @@
-//! The benchmark command: time the real detection chain on synthetic patterns.
+//! The benchmark command: time the full detection pipeline on a synthetic image.
 //!
-//! The harness that answers the project's central question — does the GPU win at
-//! these image sizes once host<->device transfer is paid for? Written as a
-//! [`BackendTask`], so identical timing code runs against CPU now and GPU later;
-//! comparing them is `vernier bench --backend cpu` vs `--backend gpu`.
-//!
-//! It times the full on-device path (upload -> forward FFT -> filter -> inverse
-//! FFT -> phase -> download), because the transfer cost is part of the honest
-//! comparison. Timing only the FFT kernel would flatter the GPU by hiding the
-//! upload it cannot avoid.
+//! Times upload → FFT → peak search → two-direction bandpass/IFFT/phase,
+//! so host↔device transfer cost is included in the honest GPU comparison.
 
 use std::time::Instant;
 
 use vernier_core::buffer::BufferLayout;
-use vernier_core::{Complex32, ComputeBackend};
-use vernier_detection::spectrum::{analyze_direction, forward};
+use vernier_core::{Complex32, ComputeBackend, Real};
+use vernier_detection::spectrum::analyze_two;
+use vernier_patterns::PatternPose;
+use vernier_patterns::periodic::Periodic;
 
 use crate::backend_select::BackendTask;
 
 /// Parameters for a benchmark run.
 pub struct Benchmark {
-    /// Square image side length (power of two recommended).
+    /// Square image side length.
     pub size: usize,
     /// Number of timed iterations.
     pub iterations: usize,
     /// Band-pass filter width in bins.
     pub sigma: f32,
+    /// Inner annulus radius for peak search (bins); 0 = no lower limit.
+    pub min_frequency: usize,
+    /// Outer annulus radius for peak search (bins); 0 = no upper limit.
+    pub max_frequency: usize,
+    /// Gaussian blur sigma applied to magnitude before peak search.
+    pub smoothing_sigma: f32,
 }
 
 /// What a benchmark run reports.
@@ -43,17 +44,12 @@ pub struct BenchReport {
 }
 
 impl Benchmark {
-    fn synthetic(size: usize) -> (Vec<Complex32>, BufferLayout) {
-        use std::f32::consts::TAU;
-        let layout = BufferLayout::packed(size, size);
-        let mut data = Vec::with_capacity(layout.len());
-        for _r in 0..size {
-            for c in 0..size {
-                let v = (TAU * 5.0 * c as f32 / size as f32).cos();
-                data.push(Complex32::new(v, 0.0));
-            }
-        }
-        (data, layout)
+    fn synthetic_image(size: usize) -> Vec<f32> {
+        let period = (size as f32) / 16.0;
+        let pattern = Periodic::new(period as Real);
+        let pose = PatternPose::new(0.0, 0.0, 0.1);
+        let img = pattern.render(size, size, &pose);
+        img.as_slice().to_vec()
     }
 }
 
@@ -61,25 +57,26 @@ impl BackendTask for Benchmark {
     type Output = BenchReport;
 
     fn run<B: ComputeBackend>(&self, backend: &B) -> BenchReport {
-        let (data, layout) = Self::synthetic(self.size);
-        let sigma = self.sigma as f64 as vernier_core::Real;
+        let pixels = Self::synthetic_image(self.size);
+        let layout = BufferLayout::packed(self.size, self.size);
+        let complex: Vec<Complex32> =
+            pixels.iter().map(|&v| Complex32::new(v as f32, 0.0)).collect();
+        let sigma = self.sigma as Real;
+        let smoothing = self.smoothing_sigma as Real;
 
-        // Warm-up: build/cache FFT plans so the timed loop is steady-state.
+        // Warm-up: prime any FFT planning or GPU pipeline caches.
         {
-            let mut buf = backend.upload(&data, layout).unwrap();
-            forward(backend, &mut buf).unwrap();
-            let spectrum = buf.clone();
-            let _ = analyze_direction(backend, spectrum, sigma);
+            let mut buf = backend.upload(&complex, layout).unwrap();
+            let _ = analyze_two(backend, &mut buf, sigma, self.min_frequency, self.max_frequency, smoothing);
         }
 
         let mut best = f64::INFINITY;
         let mut total = 0.0;
         for _ in 0..self.iterations {
             let start = Instant::now();
-            let mut buf = backend.upload(&data, layout).unwrap();
-            forward(backend, &mut buf).unwrap();
-            let spectrum = buf.clone();
-            let _ = analyze_direction(backend, spectrum, sigma).unwrap();
+            let mut buf = backend.upload(&complex, layout).unwrap();
+            analyze_two(backend, &mut buf, sigma, self.min_frequency, self.max_frequency, smoothing)
+                .expect("detection failed during benchmark");
             let ms = start.elapsed().as_secs_f64() * 1e3;
             total += ms;
             best = best.min(ms);

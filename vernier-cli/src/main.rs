@@ -15,12 +15,32 @@ mod pgm;
 
 use args::{Command, TopLevel};
 use backend_select::{BackendKind, dispatch};
+use commands::benchmark::Benchmark;
 use commands::detect_megarena::DetectMegarena;
 
 fn main() {
     let top: TopLevel = argh::from_env();
 
     match top.command {
+        Command::Bench(a) => {
+            let Some(kind) = BackendKind::parse(&a.backend) else {
+                eprintln!("unknown backend '{}'. try: cpu, gpu", a.backend);
+                std::process::exit(2);
+            };
+            let task = Benchmark {
+                size: a.size,
+                iterations: a.iters,
+                sigma: a.sigma,
+                min_frequency: a.min_frequency,
+                max_frequency: a.max_frequency,
+                smoothing_sigma: a.smoothing_sigma,
+            };
+            let r = dispatch(kind, &task);
+            println!(
+                "backend={} size={}x{} iters={} mean={:.2}ms best={:.2}ms",
+                r.backend, r.size, r.size, r.iterations, r.mean_ms, r.best_ms
+            );
+        }
         Command::DetectMegarena(a) => {
             let Some(kind) = BackendKind::parse(&a.backend) else {
                 eprintln!("unknown backend '{}'. try: cpu", a.backend);

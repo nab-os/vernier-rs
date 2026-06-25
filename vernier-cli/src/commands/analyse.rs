@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use vernier_core::buffer::BufferLayout;
-use vernier_core::{Complex32, ComputeBackend};
+use vernier_core::{Complex32, ComputeBackend, ComputeJob};
 use vernier_cpu::CpuBackend;
 
 use crate::imageio::load_grayscale;
@@ -124,7 +124,11 @@ impl Analyse {
         let layout = BufferLayout::packed(width, height);
         let complex: Vec<Complex32> = img.data.iter().map(|&v| Complex32::new(v, 0.0)).collect();
         let mut buf = backend.upload(&complex, layout).unwrap();
-        backend.fft2d(&mut buf).unwrap();
+        {
+            let mut job = backend.begin().unwrap();
+            job.fft2d(&mut buf).unwrap();
+            job.submit().unwrap();
+        }
         let spec = backend.download(&buf).unwrap();
         let mag: Vec<f64> = spec.iter().map(|c| (c.norm_sqr() as f64).sqrt()).collect();
         pgm::save_log_magnitude(

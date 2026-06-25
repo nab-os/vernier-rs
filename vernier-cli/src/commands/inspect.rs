@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use vernier_core::buffer::BufferLayout;
-use vernier_core::{Complex32, ComputeBackend, Real};
+use vernier_core::{Complex32, ComputeBackend, ComputeJob, Real};
 use vernier_cpu::CpuBackend;
 use vernier_detection::planefit::fit_plane;
 use vernier_patterns::PatternPose;
@@ -68,7 +68,11 @@ impl Inspect {
         let mut buf = backend.upload(&complex, layout).unwrap();
 
         // --- Stage 1: forward FFT, save log magnitude (fftshifted) ---
-        backend.fft2d(&mut buf).unwrap();
+        {
+            let mut job = backend.begin().unwrap();
+            job.fft2d(&mut buf).unwrap();
+            job.submit().unwrap();
+        }
         let spec = backend.download(&buf).unwrap();
         let mag: Vec<f64> = spec.iter().map(|c| (c.norm_sqr() as f64).sqrt()).collect();
         pgm::save_log_magnitude(
@@ -78,9 +82,26 @@ impl Inspect {
             &pgm::fftshift(w, h, &mag),
         )?;
 
-        // Locate the lobe (same half-plane rule as detection).
-        let (idx, _m) = backend.argmax_magnitude_halfplane(&buf, 0).unwrap();
-        let (cx, cy) = (idx % w, idx / w);
+        // Locate the lobe in the upper half-plane (same rule as peak_search).
+        let (cx, cy) = {
+            let signed = |f: usize, n: usize| -> isize {
+                let (f, n) = (f as isize, n as isize);
+                if f > n / 2 { f - n } else { f }
+            };
+            let mut best = f32::NEG_INFINITY;
+            let mut best_pos = (0usize, 0usize);
+            for fy in 0..h {
+                if signed(fy, h) < 0 { continue; }
+                for fx in 0..w {
+                    let m = spec[fy * w + fx].norm();
+                    if m > best {
+                        best = m;
+                        best_pos = (fx, fy);
+                    }
+                }
+            }
+            best_pos
+        };
 
         // --- Stage 2: the band-pass mask itself ---
         // Reconstruct the Gaussian for visualization (same formula as the
@@ -94,9 +115,11 @@ impl Inspect {
         )?;
 
         // --- Stage 3: apply band-pass, save the isolated lobe ---
-        backend
-            .bandpass_filter(&mut buf, cx, cy, self.sigma as Real)
-            .unwrap();
+        {
+            let mut job = backend.begin().unwrap();
+            job.bandpass_filter(&mut buf, cx, cy, self.sigma as Real).unwrap();
+            job.submit().unwrap();
+        }
         let filtered = backend.download(&buf).unwrap();
         let fmag: Vec<f64> = filtered
             .iter()
@@ -110,8 +133,13 @@ impl Inspect {
         )?;
 
         // --- Stage 4: inverse FFT, wrapped phase ---
-        backend.ifft2d(&mut buf).unwrap();
-        let phase_field = backend.extract_phase(&buf).unwrap();
+        let phase_field = {
+            let mut job = backend.begin().unwrap();
+            job.ifft2d(&mut buf).unwrap();
+            let pf = job.extract_phase(&buf).unwrap();
+            job.submit().unwrap();
+            pf
+        };
         let phase_data = backend.download(&phase_field).unwrap();
         let wrapped: Vec<f64> = phase_data.iter().map(|c| c.re as f64).collect();
         pgm::save_linear(&stage(dir, "04_phase_wrapped.pgm"), w, h, &wrapped)?;

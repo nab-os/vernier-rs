@@ -21,7 +21,7 @@ fn megarena_absolute_roundtrip() {
     let size = 512usize;
     let period = 12.0;
     let order = 8u32;
-    let backend = CpuBackend::new();
+    let mut backend = CpuBackend::new();
 
     // Render an axis-aligned megarena (theta = 0 keeps cell indexing simple for
     // a first end-to-end check; the extraction itself is rotation-general).
@@ -39,7 +39,7 @@ fn megarena_absolute_roundtrip() {
 
     // Two-direction detection -> phase maps for both axes.
     // sigma=4.0, no annulus limits (synthetic image, no lighting), no blur, no window.
-    let detection = analyze_two(&backend, &mut buf, 4.0, 0, 0, 0.0).unwrap();
+    let detection = analyze_two(&mut backend, &mut buf, 4.0, 0, 0, 0.0).unwrap();
 
     // Extract the binary code windows from the image intensities + phase maps.
     let intensity: Vec<f32> = image.as_slice().to_vec();

@@ -11,10 +11,15 @@
 
 use std::path::PathBuf;
 
-use vernier_core::buffer::BufferLayout;
-use vernier_core::{Complex32, ComputeBackend, Real};
+use vernier_core::image::GrayImage;
+use vernier_core::scalar::consts::TAU;
+use vernier_core::{ComputeBackend, Real};
 use vernier_detection::spectrum::analyze_two;
-use vernier_pose::absolute::{CoarseDecoder, MegarenaDecoder, detect_orientation, extract_code};
+use vernier_pose::absolute::{
+    CoarseDecoder, MegarenaDecoder, decode_bit_maps, detect_orientation, extract_code,
+};
+
+use super::debug_render;
 use vernier_pose::{Calibration, periodic};
 
 use crate::backend_select::BackendTask;
@@ -59,35 +64,72 @@ pub struct DetectMegarenaReport {
 impl BackendTask for DetectMegarena {
     type Output = DetectMegarenaReport;
 
-    fn run<B: ComputeBackend>(&self, backend: &mut B) -> DetectMegarenaReport {
-        let img = load_grayscale(&self.image_path).unwrap();
+    fn run<B: ComputeBackend>(&self, backend: &B) -> DetectMegarenaReport {
+        let img = load_grayscale(&self.image_path).expect("failed to load image");
         let (width, height) = (img.width, img.height);
-
-        let layout = BufferLayout::packed(width, height);
-        let complex: Vec<Complex32> = img.data.iter().map(|&v| Complex32::new(v, 0.0)).collect();
-        let mut buf = backend
-            .upload(&complex, layout)
-            .map_err(|e| format!("upload failed: {e:?}"))
-            .unwrap();
+        let gray = GrayImage::from_vec(width, height, img.data).expect("image dimensions mismatch");
+        let mut buf = backend.upload_real(&gray).expect("upload failed");
 
         // Two-direction detection -> phase planes + phase maps.
         let detection = analyze_two(
             backend,
             &mut buf,
-            self.sigma as vernier_core::Real,
+            self.sigma as Real,
             self.min_frequency,
             self.max_frequency,
-            self.smoothing_sigma as vernier_core::Real,
+            self.smoothing_sigma as Real,
         )
-        .map_err(|e| format!("detection failed: {e:?}"))
-        .unwrap();
+        .expect("detection failed");
 
-        let calib = Calibration::new(self.physical_period as vernier_core::Real, width, height);
+        let calib = Calibration::new(self.physical_period as Real, width, height);
         let fine = periodic::estimate(&detection.dir1.plane, &detection.dir2.plane, &calib);
 
-        let intensity: Vec<vernier_core::Real> =
-            img.data.iter().map(|&v| v as vernier_core::Real).collect();
-        let code = extract_code(&detection, &intensity, self.code_size).unwrap();
+        if self.verbose {
+            let (b1x, b1y) = detection.dir1.peak_bin;
+            let (b2x, b2y) = detection.dir2.peak_bin;
+            eprintln!(
+                "carrier 1: bin=({b1x},{b1y})  peak=({:.3},{:.3})",
+                detection.dir1.peak.0, detection.dir1.peak.1
+            );
+            eprintln!(
+                "carrier 2: bin=({b2x},{b2y})  peak=({:.3},{:.3})",
+                detection.dir2.peak.0, detection.dir2.peak.1
+            );
+            eprintln!(
+                "plane 1:  a={:.6}  b={:.6}  c={:.6}",
+                detection.dir1.plane.a, detection.dir1.plane.b, detection.dir1.plane.c
+            );
+            eprintln!(
+                "plane 2:  a={:.6}  b={:.6}  c={:.6}",
+                detection.dir2.plane.a, detection.dir2.plane.b, detection.dir2.plane.c
+            );
+            eprintln!("fine theta={:.6} rad", fine.theta);
+        }
+
+        let intensity: Vec<Real> = gray.as_slice().iter().map(|&v| v as Real).collect();
+
+        if self.verbose {
+            match detect_orientation(&detection, &intensity) {
+                None => eprintln!("orientation: FAILED (global-cell bin empty)"),
+                Some((grid, orient)) => {
+                    eprintln!(
+                        "orientation: coding=({},{}) missing=({},{}) k3={}",
+                        orient.coding1,
+                        orient.coding2,
+                        orient.missing1,
+                        orient.missing2,
+                        orient.quadrant
+                    );
+                    eprintln!("global cell (3x3 mean intensities):");
+                    for row in &grid {
+                        eprintln!("  [{:.3} {:.3} {:.3}]", row[0], row[1], row[2]);
+                    }
+                }
+            }
+        }
+
+        let code =
+            extract_code(&detection, &intensity, self.code_size).expect("code extraction failed");
 
         let decoder = MegarenaDecoder::new(
             self.code_size,
@@ -95,44 +137,69 @@ impl BackendTask for DetectMegarena {
             code.y_window.clone(),
             code.k3,
         )
-        .ok_or_else(|| format!("unsupported code size {}", self.code_size))
-        .unwrap();
+        .unwrap_or_else(|| panic!("unsupported code size {}", self.code_size));
 
-        let orders = decoder.decode().unwrap();
-        // C++ absolute position formula (MegarenaPatternDetector::draw):
-        //   periodShift = bitSequence DOT-period index of image centre
-        //               = 3*(K_center + order)
-        //   x = −physicalPeriod × (c/(2π) + periodShift)
-        //
-        // Swap/flip follows C++ computeAbsolutePose rotation logic:
-        //   swap x↔y when exactly one MSB is 0 (rotate90 or rotate270)
-        //   negate c for the direction whose MSB=0 (C++ plane.flip() negates a,b,c)
-        use vernier_core::scalar::consts::TAU;
-        let period = self.physical_period as vernier_core::Real;
+        let orders = decoder.decode().expect("LFSR decode failed");
+
+        // Absolute position (C++ MegarenaPatternDetector::draw):
+        //   x = −period × (c/(2π) + periodShift)
+        // c is the phase-plane intercept; its sign flips when the direction's MSB is 0.
+        // When exactly one MSB is 0 the pattern is rotated 90°/270° — swap x↔y axes.
+        let period = self.physical_period as Real;
         let swap = code.msb1 != code.msb2;
-        let (ps_x, ps_y, c_x, c_y, msb_x, msb_y) = if swap {
-            (
-                code.y_periodshift,
-                code.x_periodshift,
-                detection.dir2.plane.c,
-                detection.dir1.plane.c,
-                code.msb2,
-                code.msb1,
-            )
+
+        let (x_c, x_ps, x_msb) = if swap {
+            (detection.dir2.plane.c, code.y_periodshift, code.msb2)
         } else {
-            (
-                code.x_periodshift,
-                code.y_periodshift,
-                detection.dir1.plane.c,
-                detection.dir2.plane.c,
-                code.msb1,
-                code.msb2,
-            )
+            (detection.dir1.plane.c, code.x_periodshift, code.msb1)
         };
-        let c_x_eff = if msb_x { c_x } else { -c_x };
-        let c_y_eff = if msb_y { c_y } else { -c_y };
-        let abs_x = -(period * (c_x_eff / TAU + ps_x as vernier_core::Real));
-        let abs_y = -(period * (c_y_eff / TAU + ps_y as vernier_core::Real));
+        let (y_c, y_ps, y_msb) = if swap {
+            (detection.dir1.plane.c, code.x_periodshift, code.msb1)
+        } else {
+            (detection.dir2.plane.c, code.y_periodshift, code.msb2)
+        };
+        let flip_c = |c: Real, msb: bool| -> Real { if msb { c } else { -c } };
+        let abs_x = -(period * (flip_c(x_c, x_msb) / TAU + x_ps as Real));
+        let abs_y = -(period * (flip_c(y_c, y_msb) / TAU + y_ps as Real));
+
+        if self.verbose {
+            eprintln!(
+                "msb1={}  msb2={}  k3={}  swap={swap}",
+                code.msb1, code.msb2, code.k3
+            );
+            eprintln!(
+                "x_periodshift={}  y_periodshift={}",
+                code.x_periodshift, code.y_periodshift
+            );
+            eprintln!("LFSR k1={}  k2={}", orders.k1, orders.k2);
+            eprintln!("abs: x={abs_x:.4} µm  y={abs_y:.4} µm");
+        }
+
+        if let Some(prefix) = &self.debug_image {
+            let gray_f64: Vec<f64> = gray.as_slice().iter().map(|&v| v as f64).collect();
+            if let Err(e) = debug_render::render_spectrum_debug(
+                &gray_f64,
+                width,
+                height,
+                &detection,
+                self.min_frequency,
+                &with_suffix(prefix, "_spectrum.png"),
+            ) {
+                eprintln!("warning: spectrum debug image: {e}");
+            }
+            let (x_bits, y_bits) = decode_bit_maps(&detection, &intensity);
+            if let Err(e) = debug_render::render_decode_debug(
+                &gray_f64,
+                width,
+                height,
+                &detection,
+                &x_bits,
+                &y_bits,
+                &with_suffix(prefix, "_decoded.png"),
+            ) {
+                eprintln!("warning: decode debug image: {e}");
+            }
+        }
 
         DetectMegarenaReport {
             backend: backend.name().to_string(),

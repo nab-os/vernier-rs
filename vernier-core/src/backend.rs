@@ -1,128 +1,125 @@
-//! The [`ComputeBackend`] trait — the one swappable axis of the architecture.
+//! The [`ComputeBackend`] and [`ComputeJob`] traits.
 //!
-//! `vernier-cpu` implements this with `rustfft`/`ndarray`; `vernier-gpu`
-//! implements the *same* trait with Vulkano compute. The pipeline crates
-//! (`vernier-detection`, `vernier-pose`) are generic over `B: ComputeBackend`
-//! and never name a concrete backend, so choosing one is a single line in
-//! `vernier-cli`.
+//! `vernier-cpu` implements these with `rustfft`/`ndarray`; `vernier-gpu`
+//! implements the same traits with Vulkano compute.
 //!
-//! ## Scope discipline
+//! ## Lifecycle
 //!
-//! This trait abstracts only operations that genuinely have two
-//! implementations — the FFT, its inverse, the per-pixel phase stage, and the
-//! on-device reductions that become kernels. Orchestration that runs on
-//! already-downloaded results (megarena decode bookkeeping, peak selection
-//! logic) stays as plain functions in the pipeline crates. A backend trait that
-//! grows to twenty methods is a smell; keep new methods out unless a GPU version
-//! would actually differ from the CPU one.
+//! ```text
+//! backend.upload(...)         → Buffer2D       (immediate; staging transfer)
+//! let mut job = backend.begin()?
+//! job.fft2d(&mut buf)?        → queues work
+//! job.peak_search(...)        → queues work, returns a Buffer2D handle
+//! job.submit()?               → executes everything queued so far
+//! backend.download(&buf)?     → reads result back to host (immediate)
+//! ```
 //!
-//! ## The on-device principle, encoded in the types
+//! A job is a unit of work that may span multiple operations. On the CPU all
+//! operations are synchronous and `submit()` is a no-op. On the GPU operations
+//! are recorded into a command buffer and `submit()` dispatches and waits.
 //!
-//! [`upload`](ComputeBackend::upload) and [`download`](ComputeBackend::download)
-//! are the *only* host<->device crossings. Everything else takes and returns
-//! `Self::Buffer2D`, so a correct pipeline uploads once, chains
-//! [`fft2d`](ComputeBackend::fft2d) -> [`extract_phase`](ComputeBackend::extract_phase)
-//! -> reductions on the device, and downloads only the handful of values it
-//! actually needs. If you find yourself calling `download` between two compute
-//! steps, that is the bug the API is shaped to make visible.
+//! ## The `copy_buffer` method
+//!
+//! When the same spectrum must be processed in two independent ways (e.g. two
+//! carrier directions), use `job.copy_buffer(src)` to obtain a distinct GPU
+//! buffer before applying destructive in-place operations. On the CPU this is
+//! a plain `Vec` copy; on the GPU it queues a `copy_buffer` command.
 
 use crate::buffer::{Buffer2D, BufferLayout};
 use crate::complex::Complex32;
 use crate::error::Result;
 use crate::scalar::Real;
 
-/// A compute backend: owns a device/context and executes the spectral pipeline
-/// primitives on its own [`Buffer2D`](ComputeBackend::Buffer2D) type.
-pub trait ComputeBackend {
-    /// The backend's concrete 2D buffer.
+/// A unit of queued work produced by [`ComputeBackend::begin`].
+///
+/// Each method records an operation; [`submit`](ComputeJob::submit) executes them.
+/// On the CPU every method executes immediately and `submit` is a no-op.
+pub trait ComputeJob {
+    /// The buffer type this job operates on (must match the backend's `Buffer2D`).
+    type Buffer2D;
+
+    /// Produces a deep copy of `src` as a new, independently-writable buffer.
     ///
-    /// CPU: a wrapper over `ndarray::Array2<Complex32>`.
-    /// GPU: a wrapper over a Vulkano `Subbuffer<[Complex32]>`.
-    ///
-    /// `Clone` is part of the contract because the real detection chain must
-    /// duplicate a spectrum before the destructive band-pass + inverse FFT (one
-    /// copy per pattern direction). On CPU this is an array copy; on GPU a
-    /// buffer-to-buffer copy command. A backend that cannot duplicate a buffer
-    /// cannot implement the two-direction pipeline, so the requirement belongs
-    /// here rather than leaking into every caller as a `where` clause.
-    type Buffer2D: Buffer2D + Clone;
+    /// On GPU this queues a `copy_buffer` command; on CPU it clones the underlying
+    /// storage. Use this before any destructive in-place operation when the same
+    /// source buffer must be processed in multiple independent ways.
+    fn copy_buffer(&mut self, src: &Self::Buffer2D) -> Result<Self::Buffer2D>;
 
-    // --- Host <-> device crossings (explicit and rare) ----------------------
+    /// In-place 2D forward FFT.
+    fn fft2d(&mut self, buf: &mut Self::Buffer2D) -> Result<()>;
 
-    /// Initializes the backend before queueing operations
-    fn init(&mut self) -> Result<()> {
-        Ok(())
-    }
+    /// In-place 2D inverse FFT.
+    fn ifft2d(&mut self, buf: &mut Self::Buffer2D) -> Result<()>;
 
-    /// Exec queued operations
-    fn exec(&mut self) -> Result<()> {
-        Ok(())
-    }
+    /// Gaussian band-pass filter in-place, centred on frequency bin `(cx, cy)`.
+    fn bandpass_filter(
+        &mut self,
+        buf: &mut Self::Buffer2D,
+        cx: usize,
+        cy: usize,
+        sigma: Real,
+    ) -> Result<()>;
 
-    /// Uploads contiguous, row-major complex data into a device buffer.
-    ///
-    /// `data.len()` must equal `layout.len()` and `layout` must be contiguous;
-    /// otherwise the implementation returns
-    /// [`VernierError::NonContiguous`](crate::error::VernierError::NonContiguous)
-    /// or a shape error. On the GPU path this is a zero-copy byte cast plus a
-    /// staging transfer; do not call it per stage.
-    fn upload(&self, data: &[Complex32], layout: BufferLayout) -> Result<Self::Buffer2D>;
+    /// Annulus mask: zeroes bins outside `[min_frequency, max_frequency]` from DC.
+    fn filter(
+        &mut self,
+        buf: &mut Self::Buffer2D,
+        min_frequency: usize,
+        max_frequency: usize,
+    ) -> Result<()>;
 
-    /// Downloads a device buffer back to host memory, row-major.
-    ///
-    /// The deliberate device->host crossing. In a tuned pipeline this returns a
-    /// small result (an isolated peak neighborhood, or the final phases), not a
-    /// full image.
-    fn download(&self, buffer: &Self::Buffer2D) -> Result<Vec<Complex32>>;
+    /// Separable 2D Gaussian blur on the real component, in-place.
+    fn gaussian_blur_2d(&mut self, buf: &mut Self::Buffer2D, sigma: Real) -> Result<()>;
 
-    /// Convenience: upload a real image as complex (imaginary parts zeroed).
-    ///
-    /// Provided so callers do not hand-roll the promotion; backends may override
-    /// it with an R2C fast path that never materializes the zeros.
-    fn upload_real(&self, image: &crate::image::GrayImage) -> Result<Self::Buffer2D> {
-        let complex = image.to_complex();
-        self.upload(&complex, image.layout())
-    }
+    /// Per-pixel `atan2(im, re)` → new buffer with phase in the `.re` lane.
+    fn extract_phase(&mut self, buf: &Self::Buffer2D) -> Result<Self::Buffer2D>;
 
-    // --- On-device compute primitives ---------------------------------------
-
-    /// In-place 2D forward FFT of `buffer`.
-    ///
-    /// Implementations may require power-of-two dimensions and should return
-    /// [`VernierError::UnsupportedSize`](crate::error::VernierError::UnsupportedSize)
-    /// otherwise. The GPU path is the project's reason for existing: a batched,
-    /// on-device transform (hand-written Stockham passes, or VkFFT via interop).
-    fn fft2d(&self, buffer: &mut Self::Buffer2D) -> Result<()>;
-
-    /// In-place 2D inverse FFT of `buffer`.
-    fn ifft2d(&self, buffer: &mut Self::Buffer2D) -> Result<()>;
-
-    fn extract_phase(&self, buffer: &Self::Buffer2D) -> Result<Self::Buffer2D>;
-
+    /// Finds the two carrier peaks and returns a 2×2 buffer holding
+    /// `[cx1, cy1, cx2, cy2]` (ordered so direction 1 has the larger signed
+    /// column frequency). Returns `None` when no valid peaks are found.
     fn peak_search(
-        &self,
-        buffer: &mut Self::Buffer2D,
+        &mut self,
+        buf: &mut Self::Buffer2D,
         min_frequency: usize,
         max_frequency: usize,
         smoothing_sigma: Real,
         sigma: Real,
     ) -> Result<Option<Self::Buffer2D>>;
 
-    fn filter(
-        &self,
-        buffer: &mut Self::Buffer2D,
-        min_frequency: usize,
-        max_frequency: usize,
-    ) -> Result<()>;
+    /// Executes all queued operations and waits for completion.
+    ///
+    /// Consumes the job; create a new one via [`ComputeBackend::begin`] for
+    /// subsequent work.
+    fn submit(self) -> Result<()>;
+}
 
-    /// Separable 2D Gaussian blur on a real-valued array, in place.
-    fn gaussian_blur_2d(&self, buffer: &mut Self::Buffer2D, sigma: Real) -> Result<()>;
+/// A compute backend: creates jobs, uploads data, and downloads results.
+pub trait ComputeBackend {
+    /// The backend's concrete 2D buffer type.
+    type Buffer2D: Buffer2D;
 
-    /// Applies a Gaussian band-pass filter centered on a single frequency lobe,
-    /// in place on a frequency-domain buffer.
-    fn bandpass_filter(&self, buffer: &mut Self::Buffer2D, sigma: Real) -> Result<()>;
+    /// The type of job returned by [`begin`](ComputeBackend::begin).
+    type Job<'a>: ComputeJob<Buffer2D = Self::Buffer2D>
+    where
+        Self: 'a;
 
-    /// A short human-readable name for the active backend (e.g. `"cpu-rustfft"`,
-    /// `"gpu-vulkano"`). For logs and the benchmark harness.
+    /// Begins a new unit of queued work.
+    fn begin(&self) -> Result<Self::Job<'_>>;
+
+    /// Uploads contiguous, row-major complex data into a device buffer.
+    fn upload(&self, data: &[Complex32], layout: BufferLayout) -> Result<Self::Buffer2D>;
+
+    /// Downloads a device buffer back to host memory, row-major.
+    ///
+    /// Must be called after the job that produced `buffer` has been submitted.
+    fn download(&self, buffer: &Self::Buffer2D) -> Result<Vec<Complex32>>;
+
+    /// Uploads a real (greyscale) image as complex (imaginary parts zeroed).
+    fn upload_real(&self, image: &crate::image::GrayImage) -> Result<Self::Buffer2D> {
+        let complex = image.to_complex();
+        self.upload(&complex, image.layout())
+    }
+
+    /// A short human-readable name for the backend, e.g. `"cpu-rustfft"`.
     fn name(&self) -> &str;
 }

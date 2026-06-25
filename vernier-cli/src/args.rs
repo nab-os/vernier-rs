@@ -13,7 +13,41 @@ pub struct TopLevel {
 #[derive(FromArgs)]
 #[argh(subcommand)]
 pub enum Command {
+    Bench(BenchArgs),
     DetectMegarena(DetectMegarenaArgs),
+}
+
+/// Time the full two-direction detection pipeline on a synthetic image.
+#[derive(FromArgs)]
+#[argh(subcommand, name = "bench")]
+pub struct BenchArgs {
+    /// backend to use: cpu or gpu (default: cpu)
+    #[argh(option, default = "String::from(\"cpu\")")]
+    pub backend: String,
+
+    /// square image side length (default: 512)
+    #[argh(option, default = "512")]
+    pub size: usize,
+
+    /// number of timed iterations (default: 20)
+    #[argh(option, default = "20")]
+    pub iters: usize,
+
+    /// band-pass filter width in bins (default: 3.0)
+    #[argh(option, default = "3.0")]
+    pub sigma: f32,
+
+    /// inner annulus radius for peak search in bins; 0 = no lower limit (default: 20)
+    #[argh(option, default = "20")]
+    pub min_frequency: usize,
+
+    /// outer annulus radius for peak search in bins; 0 = no upper limit (default: 500)
+    #[argh(option, default = "500")]
+    pub max_frequency: usize,
+
+    /// gaussian blur sigma applied to magnitude before peak search (default: 0.5)
+    #[argh(option, default = "0.5")]
+    pub smoothing_sigma: f32,
 }
 
 /// Detect a megarena pattern in a real image and print its absolute pose (port

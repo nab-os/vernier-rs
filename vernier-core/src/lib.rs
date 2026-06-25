@@ -6,7 +6,7 @@ pub mod image;
 pub mod pose;
 pub mod scalar;
 
-pub use backend::ComputeBackend;
+pub use backend::{ComputeBackend, ComputeJob};
 pub use buffer::{Buffer2D, BufferLayout};
 pub use complex::Complex32;
 pub use error::{Result, VernierError};
