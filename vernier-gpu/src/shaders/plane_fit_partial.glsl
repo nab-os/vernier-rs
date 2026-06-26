@@ -41,45 +41,45 @@ float phase_diff(vec2 z1, vec2 z0) {
 }
 
 void main() {
-    uint x   = gl_GlobalInvocationID.x;
-    uint y   = gl_GlobalInvocationID.y;
-    uint lid = gl_LocalInvocationIndex;
+    uint x        = gl_GlobalInvocationID.x;
+    uint y        = gl_GlobalInvocationID.y;
+    uint local_id = gl_LocalInvocationIndex;
 
-    float da = 0.0, da_cnt = 0.0;
-    float db = 0.0, db_cnt = 0.0;
+    float da = 0.0, da_count = 0.0;
+    float db = 0.0, db_count = 0.0;
 
     if (x >= pc.x0 && x + 1u < pc.x1 && y >= pc.y0 && y < pc.y1) {
         vec2 z0 = z[y * pc.width + x];
         vec2 z1 = z[y * pc.width + x + 1u];
-        da     = phase_diff(z1, z0);
-        da_cnt = 1.0;
+        da       = phase_diff(z1, z0);
+        da_count = 1.0;
     }
     if (x >= pc.x0 && x < pc.x1 && y >= pc.y0 && y + 1u < pc.y1) {
         vec2 z0 = z[y * pc.width + x];
         vec2 z1 = z[(y + 1u) * pc.width + x];
-        db     = phase_diff(z1, z0);
-        db_cnt = 1.0;
+        db       = phase_diff(z1, z0);
+        db_count = 1.0;
     }
 
-    s_da[lid]     = da;
-    s_da_cnt[lid] = da_cnt;
-    s_db[lid]     = db;
-    s_db_cnt[lid] = db_cnt;
+    s_da[local_id]     = da;
+    s_da_cnt[local_id] = da_count;
+    s_db[local_id]     = db;
+    s_db_cnt[local_id] = db_count;
     barrier();
 
     for (uint stride = 32u; stride > 0u; stride >>= 1u) {
-        if (lid < stride) {
-            s_da[lid]     += s_da[lid + stride];
-            s_da_cnt[lid] += s_da_cnt[lid + stride];
-            s_db[lid]     += s_db[lid + stride];
-            s_db_cnt[lid] += s_db_cnt[lid + stride];
+        if (local_id < stride) {
+            s_da[local_id]     += s_da[local_id + stride];
+            s_da_cnt[local_id] += s_da_cnt[local_id + stride];
+            s_db[local_id]     += s_db[local_id + stride];
+            s_db_cnt[local_id] += s_db_cnt[local_id + stride];
         }
         barrier();
     }
 
-    if (lid == 0u) {
-        uint gid = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
-        parts[gid * 2u + 0u] = vec2(s_da[0], s_da_cnt[0]);
-        parts[gid * 2u + 1u] = vec2(s_db[0], s_db_cnt[0]);
+    if (local_id == 0u) {
+        uint workgroup_id = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+        parts[workgroup_id * 2u + 0u] = vec2(s_da[0], s_da_cnt[0]);
+        parts[workgroup_id * 2u + 1u] = vec2(s_db[0], s_db_cnt[0]);
     }
 }

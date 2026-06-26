@@ -230,29 +230,29 @@ impl ComputeJob for CpuJob<'_> {
 
         for r in 0..height {
             for c in 0..width {
-                let (mut v, mut w) = (0.0_f32, 0.0_f32);
+                let (mut value, mut weight_sum) = (0.0_f32, 0.0_f32);
                 for (ki, &kv) in kernel.iter().enumerate() {
                     let sc = c as isize + ki as isize - radius as isize;
                     if sc >= 0 && (sc as usize) < width {
-                        v += buf.as_slice()[r * width + sc as usize].re * kv;
-                        w += kv;
+                        value += buf.as_slice()[r * width + sc as usize].re * kv;
+                        weight_sum += kv;
                     }
                 }
-                tmp[r * width + c] = if w > 0.0 { v / w } else { 0.0 };
+                tmp[r * width + c] = if weight_sum > 0.0 { value / weight_sum } else { 0.0 };
             }
         }
 
         for r in 0..height {
             for c in 0..width {
-                let (mut v, mut w) = (0.0_f32, 0.0_f32);
+                let (mut value, mut weight_sum) = (0.0_f32, 0.0_f32);
                 for (ki, &kv) in kernel.iter().enumerate() {
                     let sr = r as isize + ki as isize - radius as isize;
                     if sr >= 0 && (sr as usize) < height {
-                        v += tmp[sr as usize * width + c] * kv;
-                        w += kv;
+                        value += tmp[sr as usize * width + c] * kv;
+                        weight_sum += kv;
                     }
                 }
-                buf.as_mut_slice()[r * width + c].re = if w > 0.0 { v / w } else { 0.0 };
+                buf.as_mut_slice()[r * width + c].re = if weight_sum > 0.0 { value / weight_sum } else { 0.0 };
             }
         }
 
@@ -280,11 +280,11 @@ impl ComputeJob for CpuJob<'_> {
         sigma: Real,
     ) -> Result<()> {
         let layout = buf.layout();
-        let (w, h) = (layout.width, layout.height);
+        let (width, height) = (layout.width, layout.height);
         let two_sigma_sq = 2.0 * sigma * sigma;
 
-        let circular_delta = |a: usize, c: usize, n: usize| -> Real {
-            let d = a as isize - c as isize;
+        let circular_delta = |a: usize, center: usize, n: usize| -> Real {
+            let d = a as isize - center as isize;
             let n = n as isize;
             let d = ((d % n) + n) % n;
             let d = if d > n / 2 { d - n } else { d };
@@ -292,15 +292,15 @@ impl ComputeJob for CpuJob<'_> {
         };
 
         let data = buf.as_mut_slice();
-        for fy in 0..h {
-            let dy = circular_delta(fy, cy, h);
-            for fx in 0..w {
-                let dx = circular_delta(fx, cx, w);
+        for fy in 0..height {
+            let dy = circular_delta(fy, cy, height);
+            for fx in 0..width {
+                let dx = circular_delta(fx, cx, width);
                 let r2 = dx * dx + dy * dy;
                 let gain = (-r2 / two_sigma_sq).exp() as f32;
-                let idx = fy * w + fx;
-                data[idx].re *= gain;
-                data[idx].im *= gain;
+                let flat_index = fy * width + fx;
+                data[flat_index].re *= gain;
+                data[flat_index].im *= gain;
             }
         }
         Ok(())
@@ -392,11 +392,11 @@ impl ComputeJob for CpuJob<'_> {
 
     fn plane_fit_from_ifft(&mut self, buf: &CpuBuffer, crop_factor: Real) -> Result<CpuBuffer> {
         let layout = buf.layout();
-        let (w, h) = (layout.width, layout.height);
-        let x0 = ((w as Real * crop_factor) / 2.0) as usize;
-        let y0 = ((h as Real * crop_factor) / 2.0) as usize;
-        let x1 = w - x0;
-        let y1 = h - y0;
+        let (width, height) = (layout.width, layout.height);
+        let x0 = ((width as Real * crop_factor) / 2.0) as usize;
+        let y0 = ((height as Real * crop_factor) / 2.0) as usize;
+        let x1 = width - x0;
+        let y1 = height - y0;
 
         let z = buf.as_slice();
         let (mut da_sum, mut da_cnt) = (0.0f64, 0.0f64);
@@ -404,16 +404,16 @@ impl ComputeJob for CpuJob<'_> {
 
         for fy in y0..y1 {
             for fx in x0..x1 {
-                let z0 = z[fy * w + fx];
+                let z0 = z[fy * width + fx];
                 if fx + 1 < x1 {
-                    let z1 = z[fy * w + fx + 1];
+                    let z1 = z[fy * width + fx + 1];
                     let cross = z1.im as f64 * z0.re as f64 - z1.re as f64 * z0.im as f64;
                     let dot   = z1.re as f64 * z0.re as f64 + z1.im as f64 * z0.im as f64;
                     da_sum += cross.atan2(dot);
                     da_cnt += 1.0;
                 }
                 if fy + 1 < y1 {
-                    let z1 = z[(fy + 1) * w + fx];
+                    let z1 = z[(fy + 1) * width + fx];
                     let cross = z1.im as f64 * z0.re as f64 - z1.re as f64 * z0.im as f64;
                     let dot   = z1.re as f64 * z0.re as f64 + z1.im as f64 * z0.im as f64;
                     db_sum += cross.atan2(dot);
@@ -424,13 +424,90 @@ impl ComputeJob for CpuJob<'_> {
 
         let a = if da_cnt > 0.0 { (da_sum / da_cnt) as f32 } else { 0.0 };
         let b = if db_cnt > 0.0 { (db_sum / db_cnt) as f32 } else { 0.0 };
-        let zc = z[(h / 2) * w + (w / 2)];
+        let zc = z[(height / 2) * width + (width / 2)];
         let c = zc.im.atan2(zc.re);
 
         Ok(CpuBuffer::from_slice(
             &[Complex32::new(a, 0.0), Complex32::new(b, 0.0), Complex32::new(c, 0.0)],
             vernier_core::buffer::BufferLayout { width: 3, height: 1, row_stride: 3 },
         ).unwrap())
+    }
+
+    fn spectral_plane_fit_two(
+        &mut self,
+        spectrum: &CpuBuffer,
+        peaks: &CpuBuffer,
+        sigma: Real,
+    ) -> Result<CpuBuffer> {
+        let layout = spectrum.layout();
+        let (width, height) = (layout.width, layout.height);
+        let data = spectrum.as_slice();
+        let peaks_data = peaks.as_slice();
+
+        let signed = |f: usize, n: usize| -> isize {
+            let f = f as isize;
+            let n = n as isize;
+            if f > n / 2 { f - n } else { f }
+        };
+
+        let sfx1 = signed(peaks_data[0].re as usize, width) as f64;
+        let sfy1 = signed(peaks_data[1].re as usize, height) as f64;
+        let sfx2 = signed(peaks_data[2].re as usize, width) as f64;
+        let sfy2 = signed(peaks_data[3].re as usize, height) as f64;
+
+        let neg_inv_two_sigma_sq = -1.0_f64 / (2.0 * (sigma as f64).powi(2));
+
+        let mut acc = [[0.0_f64; 5]; 2]; // [c_re, c_im, sfx_numerator, sfy_numerator, denominator] per direction
+
+        for fy in 0..height {
+            let sfy = signed(fy, height) as f64;
+            for fx in 0..width {
+                let sfx = signed(fx, width) as f64;
+                let s = data[fy * width + fx];
+                let sign = if (fx + fy) % 2 == 0 { 1.0_f64 } else { -1.0_f64 };
+                let s_re = s.re as f64 * sign;
+                let s_im = s.im as f64 * sign;
+                let magnitude_sq = (s.re as f64).powi(2) + (s.im as f64).powi(2);
+
+                let dx1 = sfx - sfx1;
+                let dy1 = sfy - sfy1;
+                let weight1 = (neg_inv_two_sigma_sq * (dx1 * dx1 + dy1 * dy1)).exp();
+                let weighted_magnitude1 = weight1 * magnitude_sq;
+                acc[0][0] += weight1 * s_re;
+                acc[0][1] += weight1 * s_im;
+                acc[0][2] += weighted_magnitude1 * sfx;
+                acc[0][3] += weighted_magnitude1 * sfy;
+                acc[0][4] += weighted_magnitude1;
+
+                let dx2 = sfx - sfx2;
+                let dy2 = sfy - sfy2;
+                let weight2 = (neg_inv_two_sigma_sq * (dx2 * dx2 + dy2 * dy2)).exp();
+                let weighted_magnitude2 = weight2 * magnitude_sq;
+                acc[1][0] += weight2 * s_re;
+                acc[1][1] += weight2 * s_im;
+                acc[1][2] += weighted_magnitude2 * sfx;
+                acc[1][3] += weighted_magnitude2 * sfy;
+                acc[1][4] += weighted_magnitude2;
+            }
+        }
+
+        let tau = std::f64::consts::TAU;
+        let mut result = Vec::with_capacity(6);
+        for direction in 0..2 {
+            let [c_re, c_im, sfx_numerator, sfy_numerator, denominator] = acc[direction];
+            let a = if denominator != 0.0 { (tau * sfx_numerator / denominator / width as f64) as f32 } else { 0.0 };
+            let b = if denominator != 0.0 { (tau * sfy_numerator / denominator / height as f64) as f32 } else { 0.0 };
+            let c = c_im.atan2(c_re) as f32;
+            result.push(Complex32::new(a, 0.0));
+            result.push(Complex32::new(b, 0.0));
+            result.push(Complex32::new(c, 0.0));
+        }
+
+        Ok(CpuBuffer::from_slice(
+            &result,
+            vernier_core::buffer::BufferLayout { width: 6, height: 1, row_stride: 6 },
+        )
+        .unwrap())
     }
 
     fn submit(self) -> Result<()> {
@@ -443,16 +520,16 @@ impl ComputeJob for CpuJob<'_> {
 // ---------------------------------------------------------------------------
 impl CpuBackend {
     pub fn argmax_magnitude(&self, buffer: &CpuBuffer) -> Result<(usize, Real)> {
-        let mut best_idx = 0usize;
+        let mut best_index = 0usize;
         let mut best = Real::NEG_INFINITY;
-        for (i, c) in buffer.as_slice().iter().enumerate() {
-            let m = c.norm_sqr();
-            if m > best {
-                best = m;
-                best_idx = i;
+        for (index, element) in buffer.as_slice().iter().enumerate() {
+            let magnitude_sq = element.norm_sqr();
+            if magnitude_sq > best {
+                best = magnitude_sq;
+                best_index = index;
             }
         }
-        Ok((best_idx, best.sqrt()))
+        Ok((best_index, best.sqrt()))
     }
 }
 
@@ -462,16 +539,16 @@ mod tests {
     use approx::assert_abs_diff_eq;
     use vernier_core::buffer::BufferLayout;
 
-    fn checkerboard(w: usize, h: usize) -> (Vec<Complex32>, BufferLayout) {
-        let layout = BufferLayout::packed(w, h);
-        let mut v = Vec::with_capacity(layout.len());
-        for r in 0..h {
-            for c in 0..w {
-                let val = if (r + c) % 2 == 0 { 1.0 } else { -1.0 };
-                v.push(Complex32::new(val, 0.0));
+    fn checkerboard(width: usize, height: usize) -> (Vec<Complex32>, BufferLayout) {
+        let layout = BufferLayout::packed(width, height);
+        let mut data = Vec::with_capacity(layout.len());
+        for r in 0..height {
+            for c in 0..width {
+                let value = if (r + c) % 2 == 0 { 1.0 } else { -1.0 };
+                data.push(Complex32::new(value, 0.0));
             }
         }
-        (v, layout)
+        (data, layout)
     }
 
     #[test]

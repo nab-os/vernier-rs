@@ -55,11 +55,11 @@ void main() {
     int sfy = signed_freq(y, pc.height);
     float r2 = float(sfx * sfx + sfy * sfy);
 
-    uint idx = y * pc.width + x;
+    uint flat_index = y * pc.width + x;
 
     // Frequency-band gate.
     if (r2 < band_min_r2 || r2 > band_max_r2) {
-        mag[idx].x = 0.0;
+        mag[flat_index].x = 0.0;
         return;
     }
 
@@ -67,6 +67,6 @@ void main() {
     float angle = atan(float(sfy), float(sfx));
     float diff  = mod(angle - center_angle + PI, TAU) - PI;
     if (abs(diff) < half_width) {
-        mag[idx].x = 0.0;
+        mag[flat_index].x = 0.0;
     }
 }

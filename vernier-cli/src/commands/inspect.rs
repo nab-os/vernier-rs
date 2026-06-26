@@ -48,18 +48,18 @@ impl Inspect {
     pub fn run(&self) -> std::io::Result<f64> {
         std::fs::create_dir_all(&self.out_dir)?;
         let backend = CpuBackend::new();
-        let (w, h) = (self.size, self.size);
+        let (width, height) = (self.size, self.size);
         let dir = self.out_dir.as_path();
 
         // --- Stage 0: generate the input pattern ---
         let pose = PatternPose::new(0.0, 0.0, self.theta as Real);
         let pattern = Periodic::new(self.period_px as Real);
-        let image = pattern.render(w, h, &pose);
+        let image = pattern.render(width, height, &pose);
         let intensities: Vec<f64> = image.as_slice().iter().map(|&v| v as f64).collect();
-        pgm::save_unit(&stage(dir, "00_pattern.pgm"), w, h, &intensities)?;
+        pgm::save_unit(&stage(dir, "00_pattern.pgm"), width, height, &intensities)?;
 
         // Upload as complex.
-        let layout = BufferLayout::packed(w, h);
+        let layout = BufferLayout::packed(width, height);
         let complex: Vec<Complex32> = image
             .as_slice()
             .iter()
@@ -73,29 +73,29 @@ impl Inspect {
             job.fft2d(&mut buf).unwrap();
             job.submit().unwrap();
         }
-        let spec = backend.download(&buf).unwrap();
-        let mag: Vec<f64> = spec.iter().map(|c| (c.norm_sqr() as f64).sqrt()).collect();
+        let spectrum = backend.download(&buf).unwrap();
+        let magnitude: Vec<f64> = spectrum.iter().map(|element| (element.norm_sqr() as f64).sqrt()).collect();
         pgm::save_log_magnitude(
             &stage(dir, "01_fft_magnitude.pgm"),
-            w,
-            h,
-            &pgm::fftshift(w, h, &mag),
+            width,
+            height,
+            &pgm::fftshift(width, height, &magnitude),
         )?;
 
         // Locate the lobe in the upper half-plane (same rule as peak_search).
-        let (cx, cy) = {
+        let (carrier_x, carrier_y) = {
             let signed = |f: usize, n: usize| -> isize {
                 let (f, n) = (f as isize, n as isize);
                 if f > n / 2 { f - n } else { f }
             };
             let mut best = f32::NEG_INFINITY;
             let mut best_pos = (0usize, 0usize);
-            for fy in 0..h {
-                if signed(fy, h) < 0 { continue; }
-                for fx in 0..w {
-                    let m = spec[fy * w + fx].norm();
-                    if m > best {
-                        best = m;
+            for fy in 0..height {
+                if signed(fy, height) < 0 { continue; }
+                for fx in 0..width {
+                    let mag = spectrum[fy * width + fx].norm();
+                    if mag > best {
+                        best = mag;
                         best_pos = (fx, fy);
                     }
                 }
@@ -106,57 +106,57 @@ impl Inspect {
         // --- Stage 2: the band-pass mask itself ---
         // Reconstruct the Gaussian for visualization (same formula as the
         // backend's bandpass_filter, evaluated to a [0,1] image).
-        let mask = gaussian_mask(w, h, cx, cy, self.sigma as Real);
+        let mask = gaussian_mask(width, height, carrier_x, carrier_y, self.sigma as Real);
         pgm::save_unit(
             &stage(dir, "02_bandpass_mask.pgm"),
-            w,
-            h,
-            &pgm::fftshift(w, h, &mask),
+            width,
+            height,
+            &pgm::fftshift(width, height, &mask),
         )?;
 
         // --- Stage 3: apply band-pass, save the isolated lobe ---
         {
             let mut job = backend.begin().unwrap();
-            job.bandpass_filter(&mut buf, cx, cy, self.sigma as Real).unwrap();
+            job.bandpass_filter(&mut buf, carrier_x, carrier_y, self.sigma as Real).unwrap();
             job.submit().unwrap();
         }
         let filtered = backend.download(&buf).unwrap();
-        let fmag: Vec<f64> = filtered
+        let filtered_magnitude: Vec<f64> = filtered
             .iter()
-            .map(|c| (c.norm_sqr() as f64).sqrt())
+            .map(|element| (element.norm_sqr() as f64).sqrt())
             .collect();
         pgm::save_log_magnitude(
             &stage(dir, "03_isolated_lobe.pgm"),
-            w,
-            h,
-            &pgm::fftshift(w, h, &fmag),
+            width,
+            height,
+            &pgm::fftshift(width, height, &filtered_magnitude),
         )?;
 
         // --- Stage 4: inverse FFT, wrapped phase ---
         let phase_field = {
             let mut job = backend.begin().unwrap();
             job.ifft2d(&mut buf).unwrap();
-            let pf = job.extract_phase(&buf).unwrap();
+            let phase_buffer = job.extract_phase(&buf).unwrap();
             job.submit().unwrap();
-            pf
+            phase_buffer
         };
         let phase_data = backend.download(&phase_field).unwrap();
-        let wrapped: Vec<f64> = phase_data.iter().map(|c| c.re as f64).collect();
-        pgm::save_linear(&stage(dir, "04_phase_wrapped.pgm"), w, h, &wrapped)?;
+        let wrapped: Vec<f64> = phase_data.iter().map(|element| element.re as f64).collect();
+        pgm::save_linear(&stage(dir, "04_phase_wrapped.pgm"), width, height, &wrapped)?;
 
         // --- Stage 5: the fitted plane evaluated over the image ---
-        let wrapped_real: Vec<Real> = phase_data.iter().map(|c| c.re as Real).collect();
-        let plane = fit_plane(&wrapped_real, w, h, 0.5);
-        let (cxf, cyf) = (w as Real / 2.0, h as Real / 2.0);
-        let mut fitted = vec![0.0f64; w * h];
-        for r in 0..h {
-            let j = r as Real - cyf;
-            for col in 0..w {
-                let i = col as Real - cxf;
-                fitted[r * w + col] = (plane.a * i + plane.b * j + plane.c) as f64;
+        let wrapped_real: Vec<Real> = phase_data.iter().map(|element| element.re as Real).collect();
+        let plane = fit_plane(&wrapped_real, width, height, 0.5);
+        let (center_x_float, center_y_float) = (width as Real / 2.0, height as Real / 2.0);
+        let mut fitted = vec![0.0f64; width * height];
+        for r in 0..height {
+            let j = r as Real - center_y_float;
+            for col in 0..width {
+                let i = col as Real - center_x_float;
+                fitted[r * width + col] = (plane.a * i + plane.b * j + plane.c) as f64;
             }
         }
-        pgm::save_linear(&stage(dir, "05_phase_unwrapped.pgm"), w, h, &fitted)?;
+        pgm::save_linear(&stage(dir, "05_phase_unwrapped.pgm"), width, height, &fitted)?;
 
         Ok(plane.orientation() as f64)
     }
@@ -168,22 +168,22 @@ fn stage(dir: &Path, name: &str) -> PathBuf {
 
 /// Evaluates the band-pass Gaussian to a [0,1] image for visualization. Mirrors
 /// the backend's `bandpass_filter` gain formula with circular bin distance.
-fn gaussian_mask(w: usize, h: usize, cx: usize, cy: usize, sigma: Real) -> Vec<f64> {
+fn gaussian_mask(width: usize, height: usize, center_x: usize, center_y: usize, sigma: Real) -> Vec<f64> {
     let two_sigma_sq = 2.0 * sigma * sigma;
-    let circular = |a: usize, c: usize, n: usize| -> Real {
-        let d = a as isize - c as isize;
+    let circular = |a: usize, center: usize, n: usize| -> Real {
+        let d = a as isize - center as isize;
         let n = n as isize;
         let d = ((d % n) + n) % n;
         let d = if d > n / 2 { d - n } else { d };
         d as Real
     };
-    let mut out = vec![0.0; w * h];
-    for fy in 0..h {
-        let dy = circular(fy, cy, h);
-        for fx in 0..w {
-            let dx = circular(fx, cx, w);
+    let mut out = vec![0.0; width * height];
+    for fy in 0..height {
+        let dy = circular(fy, center_y, height);
+        for fx in 0..width {
+            let dx = circular(fx, center_x, width);
             let gain = (-(dx * dx + dy * dy) / two_sigma_sq).exp();
-            out[fy * w + fx] = gain as f64;
+            out[fy * width + fx] = gain as f64;
         }
     }
     out

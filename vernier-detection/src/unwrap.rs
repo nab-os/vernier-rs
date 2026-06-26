@@ -52,10 +52,10 @@ pub fn quarters_unwrap_phase(phase: &mut [Real], width: usize, height: usize) {
     if width == 0 || height == 0 {
         return;
     }
-    let ox = width / 2;
-    let oy = height / 2;
+    let origin_x = width / 2;
+    let origin_y = height / 2;
 
-    let idx = |row: usize, col: usize| row * width + col;
+    let flat_index = |row: usize, col: usize| row * width + col;
 
     let step = |iter: &mut isize, prev: Real, next: Real| {
         let diff = next - prev;
@@ -67,107 +67,107 @@ pub fn quarters_unwrap_phase(phase: &mut [Real], width: usize, height: usize) {
     };
 
     // ---- Left half ----
-    // Center row: ox-1 down to 0 (outer loop uses C++ `col` from ox to 1,
+    // Center row: origin_x-1 down to 0 (outer loop uses C++ `col` from origin_x to 1,
     // writing col-1 each iteration; vertical strips lag at column `col`).
     let mut iter_x: isize = 0;
-    let mut next_x = phase[idx(oy, ox)];
-    for col in (1..=ox).rev() {
+    let mut next_x = phase[flat_index(origin_y, origin_x)];
+    for col in (1..=origin_x).rev() {
         // Advance one step left along center row.
         let prev_x = next_x;
-        next_x = phase[idx(oy, col - 1)];
+        next_x = phase[flat_index(origin_y, col - 1)];
         step(&mut iter_x, prev_x, next_x);
-        phase[idx(oy, col - 1)] = next_x + iter_x as Real * TAU;
+        phase[flat_index(origin_y, col - 1)] = next_x + iter_x as Real * TAU;
 
         // Quarter 3: column `col`, upward from center row.
         let mut iter_y = iter_x;
-        let mut next_y = next_x; // seed = raw value at (oy, col-1), matches C++
-        for row in (1..=oy).rev() {
+        let mut next_y = next_x; // seed = raw value at (origin_y, col-1), matches C++
+        for row in (1..=origin_y).rev() {
             let prev_y = next_y;
-            next_y = phase[idx(row - 1, col)];
+            next_y = phase[flat_index(row - 1, col)];
             step(&mut iter_y, prev_y, next_y);
-            phase[idx(row - 1, col)] = next_y + iter_y as Real * TAU;
+            phase[flat_index(row - 1, col)] = next_y + iter_y as Real * TAU;
         }
 
         // Quarter 2: column `col`, downward from center row.
         let mut iter_y = iter_x;
         let mut next_y = next_x;
-        for row in oy..height - 1 {
+        for row in origin_y..height - 1 {
             let prev_y = next_y;
-            next_y = phase[idx(row + 1, col)];
+            next_y = phase[flat_index(row + 1, col)];
             step(&mut iter_y, prev_y, next_y);
-            phase[idx(row + 1, col)] = next_y + iter_y as Real * TAU;
+            phase[flat_index(row + 1, col)] = next_y + iter_y as Real * TAU;
         }
     }
     // Column 0 vertical strips (handled after the left-half loop in C++).
     {
         let mut iter_y = iter_x;
         let mut next_y = next_x;
-        for row in (1..=oy).rev() {
+        for row in (1..=origin_y).rev() {
             let prev_y = next_y;
-            next_y = phase[idx(row - 1, 0)];
+            next_y = phase[flat_index(row - 1, 0)];
             step(&mut iter_y, prev_y, next_y);
-            phase[idx(row - 1, 0)] = next_y + iter_y as Real * TAU;
+            phase[flat_index(row - 1, 0)] = next_y + iter_y as Real * TAU;
         }
     }
     {
         let mut iter_y = iter_x;
         let mut next_y = next_x;
-        for row in oy..height - 1 {
+        for row in origin_y..height - 1 {
             let prev_y = next_y;
-            next_y = phase[idx(row + 1, 0)];
+            next_y = phase[flat_index(row + 1, 0)];
             step(&mut iter_y, prev_y, next_y);
-            phase[idx(row + 1, 0)] = next_y + iter_y as Real * TAU;
+            phase[flat_index(row + 1, 0)] = next_y + iter_y as Real * TAU;
         }
     }
 
     // ---- Right half ----
     let mut iter_x: isize = 0;
-    let mut next_x = phase[idx(oy, ox)];
-    for col in ox..width - 1 {
+    let mut next_x = phase[flat_index(origin_y, origin_x)];
+    for col in origin_x..width - 1 {
         let prev_x = next_x;
-        next_x = phase[idx(oy, col + 1)];
+        next_x = phase[flat_index(origin_y, col + 1)];
         step(&mut iter_x, prev_x, next_x);
-        phase[idx(oy, col + 1)] = next_x + iter_x as Real * TAU;
+        phase[flat_index(origin_y, col + 1)] = next_x + iter_x as Real * TAU;
 
         // Quarter 4: column `col`, upward from center row.
         let mut iter_y = iter_x;
         let mut next_y = next_x;
-        for row in (1..=oy).rev() {
+        for row in (1..=origin_y).rev() {
             let prev_y = next_y;
-            next_y = phase[idx(row - 1, col)];
+            next_y = phase[flat_index(row - 1, col)];
             step(&mut iter_y, prev_y, next_y);
-            phase[idx(row - 1, col)] = next_y + iter_y as Real * TAU;
+            phase[flat_index(row - 1, col)] = next_y + iter_y as Real * TAU;
         }
 
         // Quarter 1: column `col`, downward from center row.
         let mut iter_y = iter_x;
         let mut next_y = next_x;
-        for row in oy..height - 1 {
+        for row in origin_y..height - 1 {
             let prev_y = next_y;
-            next_y = phase[idx(row + 1, col)];
+            next_y = phase[flat_index(row + 1, col)];
             step(&mut iter_y, prev_y, next_y);
-            phase[idx(row + 1, col)] = next_y + iter_y as Real * TAU;
+            phase[flat_index(row + 1, col)] = next_y + iter_y as Real * TAU;
         }
     }
     // Last column vertical strips.
     {
         let mut iter_y = iter_x;
         let mut next_y = next_x;
-        for row in (1..=oy).rev() {
+        for row in (1..=origin_y).rev() {
             let prev_y = next_y;
-            next_y = phase[idx(row - 1, width - 1)];
+            next_y = phase[flat_index(row - 1, width - 1)];
             step(&mut iter_y, prev_y, next_y);
-            phase[idx(row - 1, width - 1)] = next_y + iter_y as Real * TAU;
+            phase[flat_index(row - 1, width - 1)] = next_y + iter_y as Real * TAU;
         }
     }
     {
         let mut iter_y = iter_x;
         let mut next_y = next_x;
-        for row in oy..height - 1 {
+        for row in origin_y..height - 1 {
             let prev_y = next_y;
-            next_y = phase[idx(row + 1, width - 1)];
+            next_y = phase[flat_index(row + 1, width - 1)];
             step(&mut iter_y, prev_y, next_y);
-            phase[idx(row + 1, width - 1)] = next_y + iter_y as Real * TAU;
+            phase[flat_index(row + 1, width - 1)] = next_y + iter_y as Real * TAU;
         }
     }
 }

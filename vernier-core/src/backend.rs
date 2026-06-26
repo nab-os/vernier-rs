@@ -106,12 +106,25 @@ pub trait ComputeJob {
         sigma: Real,
     ) -> Result<Option<Self::Buffer2D>>;
 
-    /// Computes the phase-plane coefficients (a, b, c) from the complex IFFT
-    /// output `buf` using per-pixel phase gradients, without unwrapping.
-    ///
-    /// Returns a 3-element buffer: `[Complex32(a,0), Complex32(b,0), Complex32(c,0)]`.
-    /// `crop_factor ∈ [0,1)` trims edges before accumulation (0.5 = center half).
-    fn plane_fit_from_ifft(&mut self, buf: &Self::Buffer2D, crop_factor: Real) -> Result<Self::Buffer2D>;
+    /// Fits a phase plane (a, b, c) to the IFFT output using per-pixel phase
+    /// gradients. Returns `[Complex32(a,0), Complex32(b,0), Complex32(c,0)]`.
+    /// `crop_factor` trims edges (0.5 = center half).
+    fn plane_fit_from_ifft(
+        &mut self,
+        buf: &Self::Buffer2D,
+        crop_factor: Real,
+    ) -> Result<Self::Buffer2D>;
+
+    /// Computes (a, b, c) for both carrier directions from the frequency-domain
+    /// spectrum using a Gaussian-weighted spectral centroid. Returns 6 elements:
+    /// `[a1, b1, c1, a2, b2, c2]`. Faster than `plane_fit_from_ifft` but biased
+    /// by coding sidebands — use for orientation only, not absolute pose.
+    fn spectral_plane_fit_two(
+        &mut self,
+        spectrum: &Self::Buffer2D,
+        peaks: &Self::Buffer2D,
+        sigma: Real,
+    ) -> Result<Self::Buffer2D>;
 
     /// Executes all queued operations and waits for completion.
     ///

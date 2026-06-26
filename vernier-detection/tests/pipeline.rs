@@ -10,13 +10,13 @@ use vernier_core::{Complex32, ComputeBackend};
 use vernier_cpu::CpuBackend;
 use vernier_detection::spectrum::{analyze_direction, forward};
 
-fn cosine_pattern(w: usize, h: usize, kx: usize) -> (Vec<Complex32>, BufferLayout) {
+fn cosine_pattern(width: usize, height: usize, frequency_x: usize) -> (Vec<Complex32>, BufferLayout) {
     use std::f32::consts::TAU;
-    let layout = BufferLayout::packed(w, h);
+    let layout = BufferLayout::packed(width, height);
     let mut data = Vec::with_capacity(layout.len());
-    for _r in 0..h {
-        for c in 0..w {
-            let phase = TAU * (kx as f32) * (c as f32) / (w as f32);
+    for _row in 0..height {
+        for col in 0..width {
+            let phase = TAU * (frequency_x as f32) * (col as f32) / (width as f32);
             data.push(Complex32::new(phase.cos(), 0.0));
         }
     }

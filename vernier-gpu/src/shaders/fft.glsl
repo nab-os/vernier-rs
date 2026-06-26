@@ -38,42 +38,42 @@ uint bit_reverse(uint v, uint bits) {
 bool is_pow2(uint n) { return n > 0u && (n & (n - 1u)) == 0u; }
 
 void main() {
-    uint tid = gl_LocalInvocationID.x;
-    uint n;
+    uint thread_id = gl_LocalInvocationID.x;
+    uint transform_size;
 
     // ---- Load one row or column into shared memory -------------------------
     if (pc.pass == 0u) {
-        n = pc.width;
+        transform_size = pc.width;
         uint base = gl_WorkGroupID.y * pc.width;
-        if (tid < n)          s[tid]          = data[base + tid];
-        if (tid + 1024u < n)  s[tid + 1024u]  = data[base + tid + 1024u];
+        if (thread_id < transform_size)          s[thread_id]          = data[base + thread_id];
+        if (thread_id + 1024u < transform_size)  s[thread_id + 1024u]  = data[base + thread_id + 1024u];
     } else {
-        n = pc.height;
+        transform_size = pc.height;
         uint col = gl_WorkGroupID.x;
-        if (tid < n)          s[tid]          = data[tid          * pc.width + col];
-        if (tid + 1024u < n)  s[tid + 1024u]  = data[(tid+1024u)  * pc.width + col];
+        if (thread_id < transform_size)          s[thread_id]          = data[thread_id          * pc.width + col];
+        if (thread_id + 1024u < transform_size)  s[thread_id + 1024u]  = data[(thread_id+1024u)  * pc.width + col];
     }
     barrier();
 
     // ---- Choose algorithm based on whether N is a power of two ------------
-    if (is_pow2(n) && n <= 2048u) {
+    if (is_pow2(transform_size) && transform_size <= 2048u) {
         // ---- Cooley-Tukey DIT (in-place on s[]) ---------------------------
         uint bits = 0u;
-        for (uint t = n; t > 1u; t >>= 1u) bits++;
+        for (uint t = transform_size; t > 1u; t >>= 1u) bits++;
 
-        if (tid < n)         { uint r=bit_reverse(tid,bits);       if(r>tid)        {vec2 t=s[tid];      s[tid]=s[r];      s[r]=t;} }
-        if (tid+1024u < n)   { uint r=bit_reverse(tid+1024u,bits); if(r>tid+1024u)  {vec2 t=s[tid+1024u];s[tid+1024u]=s[r];s[r]=t;} }
+        if (thread_id < transform_size)         { uint rev=bit_reverse(thread_id,bits);       if(rev>thread_id)        {vec2 tmp=s[thread_id];      s[thread_id]=s[rev];      s[rev]=tmp;} }
+        if (thread_id+1024u < transform_size)   { uint rev=bit_reverse(thread_id+1024u,bits); if(rev>thread_id+1024u)  {vec2 tmp=s[thread_id+1024u];s[thread_id+1024u]=s[rev];s[rev]=tmp;} }
         barrier();
 
-        for (uint size = 2u; size <= n; size <<= 1u) {
+        for (uint size = 2u; size <= transform_size; size <<= 1u) {
             uint hstep = size >> 1u;
-            for (uint k = tid; k < n / 2u; k += 1024u) {
+            for (uint k = thread_id; k < transform_size / 2u; k += 1024u) {
                 uint grp = k / hstep, pos = k % hstep;
                 uint i = grp * size + pos, j = i + hstep;
                 float angle = -TAU * float(pos) / float(size);
-                vec2 w = vec2(cos(angle), sin(angle));
-                vec2 u = s[i], v = cmul(w, s[j]);
-                s[i] = u + v;  s[j] = u - v;
+                vec2 twiddle = vec2(cos(angle), sin(angle));
+                vec2 upper = s[i], lower = cmul(twiddle, s[j]);
+                s[i] = upper + lower;  s[j] = upper - lower;
             }
             barrier();
         }
@@ -81,12 +81,12 @@ void main() {
         // Write back
         if (pc.pass == 0u) {
             uint base = gl_WorkGroupID.y * pc.width;
-            if (tid < n)          data[base + tid]         = s[tid];
-            if (tid+1024u < n)    data[base + tid+1024u]   = s[tid+1024u];
+            if (thread_id < transform_size)          data[base + thread_id]         = s[thread_id];
+            if (thread_id+1024u < transform_size)    data[base + thread_id+1024u]   = s[thread_id+1024u];
         } else {
             uint col = gl_WorkGroupID.x;
-            if (tid < n)          data[tid         * pc.width + col] = s[tid];
-            if (tid+1024u < n)    data[(tid+1024u) * pc.width + col] = s[tid+1024u];
+            if (thread_id < transform_size)          data[thread_id         * pc.width + col] = s[thread_id];
+            if (thread_id+1024u < transform_size)    data[(thread_id+1024u) * pc.width + col] = s[thread_id+1024u];
         }
 
     } else {
@@ -94,23 +94,23 @@ void main() {
         // (safe because each thread owns distinct output indices)
         if (pc.pass == 0u) {
             uint base = gl_WorkGroupID.y * pc.width;
-            for (uint k = tid; k < n; k += 1024u) {
-                vec2 sum = vec2(0.0);
-                for (uint m = 0u; m < n; m++) {
-                    float angle = -TAU * float(k) * float(m) / float(n);
-                    sum += cmul(s[m], vec2(cos(angle), sin(angle)));
+            for (uint k = thread_id; k < transform_size; k += 1024u) {
+                vec2 dft_sum = vec2(0.0);
+                for (uint m = 0u; m < transform_size; m++) {
+                    float angle = -TAU * float(k) * float(m) / float(transform_size);
+                    dft_sum += cmul(s[m], vec2(cos(angle), sin(angle)));
                 }
-                data[base + k] = sum;
+                data[base + k] = dft_sum;
             }
         } else {
             uint col = gl_WorkGroupID.x;
-            for (uint k = tid; k < n; k += 1024u) {
-                vec2 sum = vec2(0.0);
-                for (uint m = 0u; m < n; m++) {
-                    float angle = -TAU * float(k) * float(m) / float(n);
-                    sum += cmul(s[m], vec2(cos(angle), sin(angle)));
+            for (uint k = thread_id; k < transform_size; k += 1024u) {
+                vec2 dft_sum = vec2(0.0);
+                for (uint m = 0u; m < transform_size; m++) {
+                    float angle = -TAU * float(k) * float(m) / float(transform_size);
+                    dft_sum += cmul(s[m], vec2(cos(angle), sin(angle)));
                 }
-                data[k * pc.width + col] = sum;
+                data[k * pc.width + col] = dft_sum;
             }
         }
     }

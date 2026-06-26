@@ -17,12 +17,12 @@ use std::path::Path;
 /// Writes a `width × height` grayscale image (row-major `0..=255` bytes) as a
 /// binary PGM file.
 fn write_pgm(path: &Path, width: usize, height: usize, pixels: &[u8]) -> Result<()> {
-    let f = File::create(path)?;
-    let mut w = BufWriter::new(f);
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
     // PGM binary header: magic, dimensions, max value.
-    write!(w, "P5\n{} {}\n255\n", width, height)?;
-    w.write_all(pixels)?;
-    w.flush()
+    write!(writer, "P5\n{} {}\n255\n", width, height)?;
+    writer.write_all(pixels)?;
+    writer.flush()
 }
 
 /// Normalizes `data` to bytes by linear min→max scaling. Good for anything where
@@ -71,12 +71,12 @@ pub fn save_unit(path: &Path, width: usize, height: usize, data: &[f64]) -> Resu
 /// a central DC. Operates on a row-major `width × height` buffer.
 pub fn fftshift(width: usize, height: usize, data: &[f64]) -> Vec<f64> {
     let mut out = vec![0.0; data.len()];
-    let (hw, hh) = (width / 2, height / 2);
+    let (half_width, half_height) = (width / 2, height / 2);
     for y in 0..height {
         for x in 0..width {
             // Swap quadrants diagonally.
-            let sx = (x + hw) % width;
-            let sy = (y + hh) % height;
+            let sx = (x + half_width) % width;
+            let sy = (y + half_height) % height;
             out[sy * width + sx] = data[y * width + x];
         }
     }

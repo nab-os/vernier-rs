@@ -28,30 +28,30 @@ void main() {
 
     int radius = int(ceil(3.0 * pc.sigma));
 
-    float val = 0.0;
-    float wsum = 0.0;
+    float weighted_value = 0.0;
+    float weight_sum     = 0.0;
 
     if (pc.pass == 0u) {
         // Horizontal: convolve along x for fixed y.
         for (int k = -radius; k <= radius; k++) {
             int sx = int(x) + k;
             sx = clamp(sx, 0, int(pc.width) - 1);
-            float w = exp(-float(k * k) / (2.0 * pc.sigma * pc.sigma));
-            val  += src[y * pc.width + uint(sx)].x * w;
-            wsum += w;
+            float kernel_weight = exp(-float(k * k) / (2.0 * pc.sigma * pc.sigma));
+            weighted_value += src[y * pc.width + uint(sx)].x * kernel_weight;
+            weight_sum     += kernel_weight;
         }
     } else {
         // Vertical: convolve along y for fixed x.
         for (int k = -radius; k <= radius; k++) {
             int sy = int(y) + k;
             sy = clamp(sy, 0, int(pc.height) - 1);
-            float w = exp(-float(k * k) / (2.0 * pc.sigma * pc.sigma));
-            val  += src[uint(sy) * pc.width + x].x * w;
-            wsum += w;
+            float kernel_weight = exp(-float(k * k) / (2.0 * pc.sigma * pc.sigma));
+            weighted_value += src[uint(sy) * pc.width + x].x * kernel_weight;
+            weight_sum     += kernel_weight;
         }
     }
 
-    uint idx = y * pc.width + x;
-    dst[idx].x = (wsum > 0.0) ? val / wsum : 0.0;
-    dst[idx].y = 0.0;
+    uint flat_index = y * pc.width + x;
+    dst[flat_index].x = (weight_sum > 0.0) ? weighted_value / weight_sum : 0.0;
+    dst[flat_index].y = 0.0;
 }

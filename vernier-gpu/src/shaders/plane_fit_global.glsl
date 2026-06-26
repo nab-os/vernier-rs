@@ -24,39 +24,39 @@ shared float s_db[256];
 shared float s_db_cnt[256];
 
 void main() {
-    uint lid = gl_LocalInvocationID.x;
+    uint local_id = gl_LocalInvocationID.x;
 
-    float da = 0.0, da_cnt = 0.0;
-    float db = 0.0, db_cnt = 0.0;
+    float da = 0.0, da_count = 0.0;
+    float db = 0.0, db_count = 0.0;
 
-    for (uint i = lid; i < pc.n_groups; i += 256u) {
-        da     += parts[i * 2u + 0u].x;
-        da_cnt += parts[i * 2u + 0u].y;
-        db     += parts[i * 2u + 1u].x;
-        db_cnt += parts[i * 2u + 1u].y;
+    for (uint i = local_id; i < pc.n_groups; i += 256u) {
+        da       += parts[i * 2u + 0u].x;
+        da_count += parts[i * 2u + 0u].y;
+        db       += parts[i * 2u + 1u].x;
+        db_count += parts[i * 2u + 1u].y;
     }
 
-    s_da[lid]     = da;
-    s_da_cnt[lid] = da_cnt;
-    s_db[lid]     = db;
-    s_db_cnt[lid] = db_cnt;
+    s_da[local_id]     = da;
+    s_da_cnt[local_id] = da_count;
+    s_db[local_id]     = db;
+    s_db_cnt[local_id] = db_count;
     barrier();
 
     for (uint stride = 128u; stride > 0u; stride >>= 1u) {
-        if (lid < stride) {
-            s_da[lid]     += s_da[lid + stride];
-            s_da_cnt[lid] += s_da_cnt[lid + stride];
-            s_db[lid]     += s_db[lid + stride];
-            s_db_cnt[lid] += s_db_cnt[lid + stride];
+        if (local_id < stride) {
+            s_da[local_id]     += s_da[local_id + stride];
+            s_da_cnt[local_id] += s_da_cnt[local_id + stride];
+            s_db[local_id]     += s_db[local_id + stride];
+            s_db_cnt[local_id] += s_db_cnt[local_id + stride];
         }
         barrier();
     }
 
-    if (lid == 0u) {
+    if (local_id == 0u) {
         float a = (s_da_cnt[0] > 0.0) ? s_da[0] / s_da_cnt[0] : 0.0;
         float b = (s_db_cnt[0] > 0.0) ? s_db[0] / s_db_cnt[0] : 0.0;
-        vec2 zc = z[pc.center_idx];
-        float c = atan(zc.y, zc.x);
+        vec2 center_sample = z[pc.center_idx];
+        float c = atan(center_sample.y, center_sample.x);
         result[0] = vec2(a, 0.0);
         result[1] = vec2(b, 0.0);
         result[2] = vec2(c, 0.0);

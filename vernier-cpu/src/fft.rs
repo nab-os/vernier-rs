@@ -35,30 +35,30 @@ impl Fft2dPlanner {
 
     pub(crate) fn inverse(&mut self, buf: &mut CpuBuffer) {
         self.transform(buf, FftDirection::Inverse);
-        let n = buf.layout().len() as f32;
-        for c in buf.as_mut_slice() {
-            c.re /= n;
-            c.im /= n;
+        let element_count = buf.layout().len() as f32;
+        for element in buf.as_mut_slice() {
+            element.re /= element_count;
+            element.im /= element_count;
         }
     }
 
     fn transform(&mut self, buf: &mut CpuBuffer, dir: FftDirection) {
         let layout = buf.layout();
-        let (w, h) = (layout.width, layout.height);
+        let (width, height) = (layout.width, layout.height);
 
-        let row_fft = self.plan(w, dir);
+        let row_fft = self.plan(width, dir);
         {
             let data = as_rustfft_mut(buf.as_mut_slice());
-            for row in data.chunks_exact_mut(w) {
+            for row in data.chunks_exact_mut(width) {
                 row_fft.process(row);
             }
         }
 
         transpose(buf);
-        let col_fft = self.plan(h, dir);
+        let col_fft = self.plan(height, dir);
         {
             let data = as_rustfft_mut(buf.as_mut_slice());
-            for row in data.chunks_exact_mut(h) {
+            for row in data.chunks_exact_mut(height) {
                 col_fft.process(row);
             }
         }

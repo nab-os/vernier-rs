@@ -139,8 +139,8 @@ pub(crate) fn fit_plane_to_unwrapped(
     let cropped_h = height - 2 * row_off;
 
     // C++ integer division
-    let cx = (cropped_w / 2) as Real;
-    let cy = (cropped_h / 2) as Real;
+    let center_x = (cropped_w / 2) as Real;
+    let center_y = (cropped_h / 2) as Real;
 
     // Accumulate normal-equation sums for [a, b, c].
     let (mut sii, mut sjj, mut sij) = (0.0, 0.0, 0.0);
@@ -148,9 +148,9 @@ pub(crate) fn fit_plane_to_unwrapped(
     let (mut spi, mut spj, mut sp) = (0.0, 0.0, 0.0);
 
     for r in row_off..(height - row_off) {
-        let j = (r - row_off) as Real - cy;
+        let j = (r - row_off) as Real - center_y;
         for col in col_off..(width - col_off) {
-            let i = (col - col_off) as Real - cx;
+            let i = (col - col_off) as Real - center_x;
             let p = phase[r * width + col];
             sii += i * i;
             sjj += j * j;
@@ -213,24 +213,24 @@ mod tests {
     /// Build a wrapped phase map for a known plane and check we recover it.
     #[test]
     fn recovers_a_known_plane() {
-        let (w, h) = (32, 32);
+        let (width, height) = (32, 32);
         let (true_a, true_b, true_c) = (0.30, -0.15, 0.4);
-        let cx = w as Real / 2.0;
-        let cy = h as Real / 2.0;
+        let center_x = width as Real / 2.0;
+        let center_y = height as Real / 2.0;
 
-        let mut wrapped = vec![0.0; w * h];
-        for r in 0..h {
-            for col in 0..w {
-                let i = col as Real - cx;
-                let j = r as Real - cy;
+        let mut wrapped = vec![0.0; width * height];
+        for r in 0..height {
+            for col in 0..width {
+                let i = col as Real - center_x;
+                let j = r as Real - center_y;
                 let mut p = true_a * i + true_b * j + true_c;
                 // Wrap into (-π, π].
                 p = ((p + PI).rem_euclid(TAU)) - PI;
-                wrapped[r * w + col] = p;
+                wrapped[r * width + col] = p;
             }
         }
 
-        let plane = fit_plane(&wrapped, w, h, 0.0);
+        let plane = fit_plane(&wrapped, width, height, 0.0);
         assert!((plane.a - true_a).abs() < 1e-3, "a={}", plane.a);
         assert!((plane.b - true_b).abs() < 1e-3, "b={}", plane.b);
         // c recovered modulo 2π.

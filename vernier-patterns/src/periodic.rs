@@ -41,13 +41,13 @@ impl Periodic {
     /// translation. The `0.5 +` offset keeps intensities in `[0, 1]` like a real
     /// camera image (the detector works on the AC part either way).
     pub fn render(&self, width: usize, height: usize, pose: &PatternPose) -> GrayImage {
-        let cx = width as Real / 2.0;
-        let cy = height as Real / 2.0;
+        let center_x = width as Real / 2.0;
+        let center_y = height as Real / 2.0;
         let period = self.period_px;
 
         render_with(width, height, |px, py| {
-            let (xp, _yp) = into_pattern_frame(px, py, cx, cy, pose.theta);
-            let phase = TAU * (xp - pose.x) / period;
+            let (x_pattern, _y_pattern) = into_pattern_frame(px, py, center_x, center_y, pose.theta);
+            let phase = TAU * (x_pattern - pose.x) / period;
             0.5 + 0.5 * phase.cos()
         })
     }

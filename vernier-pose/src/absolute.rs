@@ -153,14 +153,14 @@ impl CellPools {
     fn white_mean(&self, cell: (i64, i64)) -> Option<Real> {
         self.white
             .get(&cell)
-            .filter(|&&(_, n)| n > 0)
-            .map(|&(s, n)| s / n as Real)
+            .filter(|&&(_, count)| count > 0)
+            .map(|&(sum, count)| sum / count as Real)
     }
     fn background_mean(&self, cell: (i64, i64)) -> Option<Real> {
         self.background
             .get(&cell)
-            .filter(|&&(_, n)| n > 0)
-            .map(|&(s, n)| s / n as Real)
+            .filter(|&&(_, count)| count > 0)
+            .map(|&(sum, count)| sum / count as Real)
     }
 }
 
@@ -189,25 +189,25 @@ fn accumulate_cell_pools(
     let mut white: BTreeMap<(i64, i64), (Real, u64)> = BTreeMap::new();
     let mut background: BTreeMap<(i64, i64), (Real, u64)> = BTreeMap::new();
 
-    for r in 0..height {
-        for c in 0..width {
-            let idx = r * width + c;
-            let fx = phase_x[idx] / TAU;
-            let fy = phase_y[idx] / TAU;
-            let cx = fx.round();
-            let cy = fy.round();
-            let rx = (fx - cx).abs();
-            let ry = (fy - cy).abs();
-            let cell = (cx as i64, cy as i64);
-            let v = intensity[idx];
+    for row in 0..height {
+        for col in 0..width {
+            let flat_index = row * width + col;
+            let fx = phase_x[flat_index] / TAU;
+            let fy = phase_y[flat_index] / TAU;
+            let cell_x = fx.round();
+            let cell_y = fy.round();
+            let rx = (fx - cell_x).abs();
+            let ry = (fy - cell_y).abs();
+            let cell = (cell_x as i64, cell_y as i64);
+            let value = intensity[flat_index];
             if rx < white_r && ry < white_r {
-                let e = white.entry(cell).or_insert((0.0, 0));
-                e.0 += v;
-                e.1 += 1;
+                let entry = white.entry(cell).or_insert((0.0, 0));
+                entry.0 += value;
+                entry.1 += 1;
             } else if rx > bg_r || ry > bg_r {
-                let e = background.entry(cell).or_insert((0.0, 0));
-                e.0 += v;
-                e.1 += 1;
+                let entry = background.entry(cell).or_insert((0.0, 0));
+                entry.0 += value;
+                entry.1 += 1;
             }
         }
     }
@@ -262,19 +262,19 @@ fn missing_from_coding(coding1: i64, coding2: i64, quadrant: u8) -> (i64, i64) {
 /// length2/2)` so callers can apply the same shift and stay frame-aligned.
 fn cpp_frame_offsets(detection: &vernier_detection::spectrum::Detection) -> (i64, i64) {
     use vernier_core::scalar::consts::TAU;
-    let (w, h) = (detection.width as f64, detection.height as f64);
+    let (width_f64, height_f64) = (detection.width as f64, detection.height as f64);
     let mag1 = (detection.dir1.plane.a.powi(2) + detection.dir1.plane.b.powi(2)).sqrt() as f64;
     let mag2 = (detection.dir2.plane.a.powi(2) + detection.dir2.plane.b.powi(2)).sqrt() as f64;
-    let pix_period = (TAU as f64 / mag1 + TAU as f64 / mag2) / 2.0;
+    let pixel_period = (TAU as f64 / mag1 + TAU as f64 / mag2) / 2.0;
     let make_odd_len = |dim: f64| -> i64 {
-        let mut l = (dim / pix_period) as i64 + 1;
-        if l % 2 == 0 {
-            l += 1;
+        let mut length = (dim / pixel_period) as i64 + 1;
+        if length % 2 == 0 {
+            length += 1;
         }
-        l
+        length
     };
-    let len1 = make_odd_len(h);
-    let len2 = make_odd_len(w);
+    let len1 = make_odd_len(height_f64);
+    let len2 = make_odd_len(width_f64);
     (len1 / 2, len2 / 2)
 }
 
@@ -294,15 +294,15 @@ fn detect_coding_orientation(
 ) -> Option<CodingOrientation> {
     let mut sum = [[0.0f64; 3]; 3];
     let mut cnt = [[0u64; 3]; 3];
-    for (&(cx, cy), &(s, n)) in &pools.white {
-        if n > 0 {
-            let i = (cx + offset1).rem_euclid(3) as usize;
-            let j = (cy + offset2).rem_euclid(3) as usize;
-            sum[i][j] += s as f64;
-            cnt[i][j] += n;
+    for (&(cell_x, cell_y), &(intensity_sum, pixel_count)) in &pools.white {
+        if pixel_count > 0 {
+            let i = (cell_x + offset1).rem_euclid(3) as usize;
+            let j = (cell_y + offset2).rem_euclid(3) as usize;
+            sum[i][j] += intensity_sum as f64;
+            cnt[i][j] += pixel_count;
         }
     }
-    if cnt.iter().flatten().any(|&c| c == 0) {
+    if cnt.iter().flatten().any(|&count| count == 0) {
         return None;
     }
     let global: [[f64; 3]; 3] =
@@ -335,12 +335,12 @@ fn detect_coding_orientation(
                     .sum();
                 let score: f64 = nc_iter
                     .map(|(i, j)| {
-                        let w = if i == missing1 && j == missing2 {
+                        let weight = if i == missing1 && j == missing2 {
                             -1.0
                         } else {
                             1.0
                         };
-                        w * global[i as usize][j as usize]
+                        weight * global[i as usize][j as usize]
                     })
                     .sum();
                 // Lexicographic (score, nc_sum): prefer strictly better score,
@@ -395,43 +395,43 @@ fn decode_axis_bits(
 ) -> std::collections::BTreeMap<i64, u8> {
     use std::collections::{BTreeMap, BTreeSet};
 
-    let mut xs: BTreeSet<i64> = BTreeSet::new();
-    let mut ys: BTreeSet<i64> = BTreeSet::new();
-    for &(cx, cy) in pools.white.keys().chain(pools.background.keys()) {
-        xs.insert(cx);
-        ys.insert(cy);
+    let mut x_positions: BTreeSet<i64> = BTreeSet::new();
+    let mut y_positions: BTreeSet<i64> = BTreeSet::new();
+    for &(cell_x, cell_y) in pools.white.keys().chain(pools.background.keys()) {
+        x_positions.insert(cell_x);
+        y_positions.insert(cell_y);
     }
 
     let (coding_axis, perp_axis): (&BTreeSet<i64>, &BTreeSet<i64>) =
-        if axis_x { (&xs, &ys) } else { (&ys, &xs) };
+        if axis_x { (&x_positions, &y_positions) } else { (&y_positions, &x_positions) };
 
-    let cell_at = |a: i64, b: i64| -> (i64, i64) { if axis_x { (a, b) } else { (b, a) } };
+    let cell_at = |axis_pos: i64, perp_pos: i64| -> (i64, i64) { if axis_x { (axis_pos, perp_pos) } else { (perp_pos, axis_pos) } };
 
     let mut bits = BTreeMap::new();
-    for &a in coding_axis {
-        if a.rem_euclid(3) != coding_residue {
+    for &axis_pos in coding_axis {
+        if axis_pos.rem_euclid(3) != coding_residue {
             continue;
         }
-        let mut coding_s = 0.0;
-        let mut coding_n = 0u64;
-        let mut white_s = 0.0;
-        let mut white_n = 0u64;
-        let mut back_s = 0.0;
-        let mut back_n = 0u64;
+        let mut coding_sum = 0.0;
+        let mut coding_count = 0u64;
+        let mut white_sum = 0.0;
+        let mut white_count = 0u64;
+        let mut background_sum = 0.0;
+        let mut background_count = 0u64;
 
-        for &b in perp_axis {
+        for &perp_pos in perp_axis {
             // Background: all perpendicular positions.
-            if let Some(m) = pools.background_mean(cell_at(a, b)) {
-                back_s += m;
-                back_n += 1;
+            if let Some(mean) = pools.background_mean(cell_at(axis_pos, perp_pos)) {
+                background_sum += mean;
+                background_count += 1;
             }
             // Coding-white and white-reference: non-coding perp positions only.
-            if b.rem_euclid(3) != perp_coding_residue {
-                if let Some(m) = pools.white_mean(cell_at(a, b)) {
-                    coding_s += m;
-                    coding_n += 1;
+            if perp_pos.rem_euclid(3) != perp_coding_residue {
+                if let Some(mean) = pools.white_mean(cell_at(axis_pos, perp_pos)) {
+                    coding_sum += mean;
+                    coding_count += 1;
                 }
-                for nb in [a - 1, a + 1] {
+                for neighbor in [axis_pos - 1, axis_pos + 1] {
                     // C++ MegarenaAbsoluteDecoding applies the missing-corner
                     // exclusion only for sequence 1 (axis_x=true). For sequence 2
                     // (axis_x=false) a C++ operator-precedence bug means
@@ -439,33 +439,33 @@ fn decode_axis_bits(
                     // `(index2 ± 1) % 3`), so the missing corner is never
                     // excluded from the y-direction white reference.
                     let include = if axis_x {
-                        nb.rem_euclid(3) != axis_missing || b.rem_euclid(3) != perp_missing
+                        neighbor.rem_euclid(3) != axis_missing || perp_pos.rem_euclid(3) != perp_missing
                     } else {
                         true
                     };
                     if include {
-                        if let Some(m) = pools.white_mean(cell_at(nb, b)) {
-                            white_s += m;
-                            white_n += 1;
+                        if let Some(mean) = pools.white_mean(cell_at(neighbor, perp_pos)) {
+                            white_sum += mean;
+                            white_count += 1;
                         }
                     }
                 }
             }
         }
 
-        if coding_n == 0 || white_n == 0 || back_n == 0 {
+        if coding_count == 0 || white_count == 0 || background_count == 0 {
             continue;
         }
-        let mean_coding = coding_s / coding_n as Real;
-        let mean_white = white_s / white_n as Real;
-        let mean_back = back_s / back_n as Real;
+        let mean_coding = coding_sum / coding_count as Real;
+        let mean_white = white_sum / white_count as Real;
+        let mean_back = background_sum / background_count as Real;
 
         let bit = if (mean_coding - mean_back).abs() < (mean_white - mean_coding).abs() {
             0u8
         } else {
             1u8
         };
-        bits.insert(a.div_euclid(3), bit);
+        bits.insert(axis_pos.div_euclid(3), bit);
     }
     bits
 }
@@ -485,8 +485,8 @@ pub fn decode_bit_maps(
     std::collections::BTreeMap<i64, u8>,
     std::collections::BTreeMap<i64, u8>,
 ) {
-    let (w, h) = (detection.width, detection.height);
-    let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, w, h);
+    let (width, height) = (detection.width, detection.height);
+    let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, width, height);
     let (off1, off2) = cpp_frame_offsets(detection);
     let orient = detect_coding_orientation(&pools, off1, off2).unwrap_or(CodingOrientation {
         coding1: 1,
@@ -525,22 +525,22 @@ pub fn detect_orientation(
     detection: &vernier_detection::spectrum::Detection,
     intensity: &[Real],
 ) -> Option<([[f64; 3]; 3], CodingOrientation)> {
-    let (w, h) = (detection.width, detection.height);
-    let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, w, h);
+    let (width, height) = (detection.width, detection.height);
+    let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, width, height);
     let (off1, off2) = cpp_frame_offsets(detection);
 
     // Build the global cell in the physical (unshifted) frame for display.
     let mut sum = [[0.0f64; 3]; 3];
     let mut cnt = [[0u64; 3]; 3];
-    for (&(cx, cy), &(s, n)) in &pools.white {
-        if n > 0 {
-            let i = cx.rem_euclid(3) as usize;
-            let j = cy.rem_euclid(3) as usize;
-            sum[i][j] += s as f64;
-            cnt[i][j] += n;
+    for (&(cell_x, cell_y), &(intensity_sum, pixel_count)) in &pools.white {
+        if pixel_count > 0 {
+            let i = cell_x.rem_euclid(3) as usize;
+            let j = cell_y.rem_euclid(3) as usize;
+            sum[i][j] += intensity_sum as f64;
+            cnt[i][j] += pixel_count;
         }
     }
-    if cnt.iter().flatten().any(|&c| c == 0) {
+    if cnt.iter().flatten().any(|&count| count == 0) {
         return None;
     }
     let global: [[f64; 3]; 3] =
@@ -554,10 +554,10 @@ pub fn extract_code(
     intensity: &[Real],
     order: u32,
 ) -> Option<ExtractedCode> {
-    let n = order as usize;
-    let (w, h) = (detection.width, detection.height);
+    let window_size = order as usize;
+    let (width, height) = (detection.width, detection.height);
 
-    let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, w, h);
+    let pools = accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, width, height);
     let (off1, off2) = cpp_frame_offsets(detection);
     let orient = detect_coding_orientation(&pools, off1, off2)?;
 
@@ -593,17 +593,17 @@ pub fn extract_code(
         let triples: Vec<i64> = bits.keys().copied().collect();
 
         for start in 0..triples.len() {
-            if start + n > triples.len() {
+            if start + window_size > triples.len() {
                 break;
             }
 
-            let consecutive = (0..n).all(|j| triples[start + j] == triples[start] + j as i64);
+            let consecutive = (0..window_size).all(|j| triples[start + j] == triples[start] + j as i64);
 
             if !consecutive {
                 continue;
             }
 
-            let window: Vec<u8> = (0..n).map(|j| bits[&(triples[start] + j as i64)]).collect();
+            let window: Vec<u8> = (0..window_size).map(|j| bits[&(triples[start] + j as i64)]).collect();
 
             // all-ones is a valid LFSR state (12-bit maximal LFSR includes it);
             // do NOT skip it here. The widx.locate check provides all validation needed.
@@ -655,26 +655,26 @@ pub fn extract_code(
     let (x_k_center, x_periodshift) = if msb1 {
         let k1 = widx.locate(&x_window)? as i64;
         let k_t0 = k1 - x_first_triple;
-        let ps = 3 * k_t0 + (3 * (n as i64 - 1) + 1) - orient.coding1;
+        let ps = 3 * k_t0 + (3 * (window_size as i64 - 1) + 1) - orient.coding1;
         (k_t0 - 1, ps)
     } else {
         x_window.reverse();
         let k1 = widx.locate(&x_window)? as i64;
-        let k_t0 = k1 + x_first_triple + n as i64 - 1;
-        let ps = 3 * k_t0 + (3 * (n as i64 - 1) + 1) + orient.coding1;
+        let k_t0 = k1 + x_first_triple + window_size as i64 - 1;
+        let ps = 3 * k_t0 + (3 * (window_size as i64 - 1) + 1) + orient.coding1;
         (k_t0 - 1, ps)
     };
 
     let (y_k_center, y_periodshift) = if msb2 {
         let k1 = widx.locate(&y_window)? as i64;
         let k_t0 = k1 - y_first_triple;
-        let ps = 3 * k_t0 + (3 * (n as i64 - 1) + 1) - orient.coding2;
+        let ps = 3 * k_t0 + (3 * (window_size as i64 - 1) + 1) - orient.coding2;
         (k_t0 - 1, ps)
     } else {
         y_window.reverse();
         let k1 = widx.locate(&y_window)? as i64;
-        let k_t0 = k1 + y_first_triple + n as i64 - 1;
-        let ps = 3 * k_t0 + (3 * (n as i64 - 1) + 1) + orient.coding2;
+        let k_t0 = k1 + y_first_triple + window_size as i64 - 1;
+        let ps = 3 * k_t0 + (3 * (window_size as i64 - 1) + 1) + orient.coding2;
         (k_t0 - 1, ps)
     };
 
@@ -770,12 +770,12 @@ mod tests {
         use vernier_patterns::lfsr::Lfsr;
         let order = 8u32;
         let lfsr = Lfsr::maximal(order).unwrap();
-        let n = order as usize;
+        let window_size = order as usize;
 
         let true_kx = 42usize;
         let true_ky = 17usize;
-        let x_window: Vec<u8> = (0..n).map(|j| lfsr.bit_at(true_kx + j)).collect();
-        let y_window: Vec<u8> = (0..n).map(|j| lfsr.bit_at(true_ky + j)).collect();
+        let x_window: Vec<u8> = (0..window_size).map(|j| lfsr.bit_at(true_kx + j)).collect();
+        let y_window: Vec<u8> = (0..window_size).map(|j| lfsr.bit_at(true_ky + j)).collect();
 
         let decoder = MegarenaDecoder::new(order, x_window, y_window, 2).unwrap();
         let orders = decoder.decode().unwrap();
@@ -789,12 +789,12 @@ mod tests {
         use vernier_patterns::lfsr::Lfsr;
         let order = 8u32;
         let lfsr = Lfsr::maximal(order).unwrap();
-        let n = order as usize;
+        let window_size = order as usize;
         let calib = Calibration::new(9.0, 64, 64);
 
         let (kx, ky) = (10usize, 5usize);
-        let xw: Vec<u8> = (0..n).map(|j| lfsr.bit_at(kx + j)).collect();
-        let yw: Vec<u8> = (0..n).map(|j| lfsr.bit_at(ky + j)).collect();
+        let xw: Vec<u8> = (0..window_size).map(|j| lfsr.bit_at(kx + j)).collect();
+        let yw: Vec<u8> = (0..window_size).map(|j| lfsr.bit_at(ky + j)).collect();
         let decoder = MegarenaDecoder::new(order, xw, yw, 0).unwrap();
 
         let p1 = PhasePlane {

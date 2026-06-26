@@ -86,17 +86,17 @@ impl Megarena {
     /// the x carrier and the y carrier are bright *and* both their periods are
     /// present. The π/2-breaking corner removal is applied per elementary cell.
     pub fn render(&self, width: usize, height: usize, pose: &PatternPose) -> GrayImage {
-        let cx = width as Real / 2.0;
-        let cy = height as Real / 2.0;
+        let center_x = width as Real / 2.0;
+        let center_y = height as Real / 2.0;
         let period = self.period_px;
 
         render_with(width, height, |px, py| {
             // Into the pattern's own (axis-aligned) frame.
-            let (xp, yp) = into_pattern_frame(px, py, cx, cy, pose.theta);
+            let (x_pattern, y_pattern) = into_pattern_frame(px, py, center_x, center_y, pose.theta);
 
             // Continuous period coordinate along each axis (shifted by pose).
-            let ux = (xp - pose.x) / period;
-            let uy = (yp - pose.y) / period;
+            let ux = (x_pattern - pose.x) / period;
+            let uy = (y_pattern - pose.y) / period;
 
             // Which integer period this pixel falls in, along each axis.
             let pxi = ux.floor() as i64;

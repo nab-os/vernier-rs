@@ -15,7 +15,7 @@ void main() {
     uint y = gl_GlobalInvocationID.y;
     if (x >= pc.width || y >= pc.height) return;
 
-    uint idx = y * pc.width + x;
-    vec2 z = src[idx];
-    dst[idx] = vec2(atan(z.y, z.x), 0.0);
+    uint flat_index = y * pc.width + x;
+    vec2 z = src[flat_index];
+    dst[flat_index] = vec2(atan(z.y, z.x), 0.0);
 }

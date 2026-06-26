@@ -33,33 +33,33 @@ impl Canvas {
         if x < 0 || y < 0 || x as usize >= self.width || y as usize >= self.height {
             return;
         }
-        let i = (y as usize * self.width + x as usize) * 3;
-        self.pixels[i] = rgb[0];
-        self.pixels[i + 1] = rgb[1];
-        self.pixels[i + 2] = rgb[2];
+        let pixel_offset = (y as usize * self.width + x as usize) * 3;
+        self.pixels[pixel_offset] = rgb[0];
+        self.pixels[pixel_offset + 1] = rgb[1];
+        self.pixels[pixel_offset + 2] = rgb[2];
     }
 
-    /// Blends a color over a pixel with alpha `a` in 0..=1 (for translucent fills).
+    /// Blends a color over a pixel with alpha `alpha` in 0..=1 (for translucent fills).
     #[inline]
-    fn blend(&mut self, x: isize, y: isize, rgb: [u8; 3], a: f64) {
+    fn blend(&mut self, x: isize, y: isize, rgb: [u8; 3], alpha: f64) {
         if x < 0 || y < 0 || x as usize >= self.width || y as usize >= self.height {
             return;
         }
-        let i = (y as usize * self.width + x as usize) * 3;
-        for k in 0..3 {
-            let bg = self.pixels[i + k] as f64;
-            let fg = rgb[k] as f64;
-            self.pixels[i + k] = (bg * (1.0 - a) + fg * a).round().clamp(0.0, 255.0) as u8;
+        let pixel_offset = (y as usize * self.width + x as usize) * 3;
+        for channel in 0..3 {
+            let background = self.pixels[pixel_offset + channel] as f64;
+            let foreground = rgb[channel] as f64;
+            self.pixels[pixel_offset + channel] = (background * (1.0 - alpha) + foreground * alpha).round().clamp(0.0, 255.0) as u8;
         }
     }
 
     /// Draws a hollow circle of the given radius (Bresenham-ish, thick by 1px).
-    pub fn circle(&mut self, cx: isize, cy: isize, r: isize, rgb: [u8; 3]) {
-        let mut x = r;
+    pub fn circle(&mut self, center_x: isize, center_y: isize, radius: isize, rgb: [u8; 3]) {
+        let mut x = radius;
         let mut y = 0isize;
         let mut err = 0isize;
         while x >= y {
-            for (dx, dy) in [
+            for (delta_x, delta_y) in [
                 (x, y),
                 (y, x),
                 (-x, y),
@@ -69,7 +69,7 @@ impl Canvas {
                 (-x, -y),
                 (-y, -x),
             ] {
-                self.put(cx + dx, cy + dy, rgb);
+                self.put(center_x + delta_x, center_y + delta_y, rgb);
             }
             y += 1;
             if err <= 0 {
@@ -82,11 +82,11 @@ impl Canvas {
         }
     }
 
-    /// Draws a crosshair centered at (cx, cy) with arm length `len`.
-    pub fn cross(&mut self, cx: isize, cy: isize, len: isize, rgb: [u8; 3]) {
-        for d in -len..=len {
-            self.put(cx + d, cy, rgb);
-            self.put(cx, cy + d, rgb);
+    /// Draws a crosshair centered at (center_x, center_y) with arm length `length`.
+    pub fn cross(&mut self, center_x: isize, center_y: isize, length: isize, rgb: [u8; 3]) {
+        for d in -length..=length {
+            self.put(center_x + d, center_y, rgb);
+            self.put(center_x, center_y + d, rgb);
         }
     }
 
@@ -115,11 +115,11 @@ impl Canvas {
         }
     }
 
-    /// Fills a small square centered at (cx, cy), half-size `h`, with alpha blend.
-    pub fn fill_square(&mut self, cx: isize, cy: isize, h: isize, rgb: [u8; 3], alpha: f64) {
-        for dy in -h..=h {
-            for dx in -h..=h {
-                self.blend(cx + dx, cy + dy, rgb, alpha);
+    /// Fills a small square centered at (center_x, center_y), half-size `half_size`, with alpha blend.
+    pub fn fill_square(&mut self, center_x: isize, center_y: isize, half_size: isize, rgb: [u8; 3], alpha: f64) {
+        for delta_y in -half_size..=half_size {
+            for delta_x in -half_size..=half_size {
+                self.blend(center_x + delta_x, center_y + delta_y, rgb, alpha);
             }
         }
     }

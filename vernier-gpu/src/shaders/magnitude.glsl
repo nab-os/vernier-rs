@@ -11,7 +11,7 @@ layout(push_constant) uniform PushConstantData {
 } pc;
 
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    if (idx >= pc.n) return;
-    data[idx] = vec2(length(data[idx]), 0.0);
+    uint flat_index = gl_GlobalInvocationID.x;
+    if (flat_index >= pc.n) return;
+    data[flat_index] = vec2(length(data[flat_index]), 0.0);
 }

@@ -16,37 +16,37 @@ layout(push_constant) uniform PushConstantData {
 } pc;
 
 shared float s_mag[256];
-shared float s_gidx[256];
+shared float s_global_index[256];
 
 void main() {
-    uint tid = gl_LocalInvocationID.x;
+    uint thread_id = gl_LocalInvocationID.x;
 
-    float best_mag  = -1.0;
-    float best_gidx = 0.0;
+    float best_mag          = -1.0;
+    float best_global_index = 0.0;
 
     // Each thread may cover multiple intermediate entries.
-    for (uint i = tid; i < pc.n_groups; i += 256u) {
-        vec2 e = entries[i];
-        if (e.x > best_mag) {
-            best_mag  = e.x;
-            best_gidx = e.y;
+    for (uint i = thread_id; i < pc.n_groups; i += 256u) {
+        vec2 entry = entries[i];
+        if (entry.x > best_mag) {
+            best_mag          = entry.x;
+            best_global_index = entry.y;
         }
     }
 
-    s_mag[tid]  = best_mag;
-    s_gidx[tid] = best_gidx;
+    s_mag[thread_id]          = best_mag;
+    s_global_index[thread_id] = best_global_index;
     barrier();
 
     for (uint stride = 128u; stride > 0u; stride >>= 1u) {
-        if (tid < stride && s_mag[tid + stride] > s_mag[tid]) {
-            s_mag[tid]  = s_mag[tid + stride];
-            s_gidx[tid] = s_gidx[tid + stride];
+        if (thread_id < stride && s_mag[thread_id + stride] > s_mag[thread_id]) {
+            s_mag[thread_id]          = s_mag[thread_id + stride];
+            s_global_index[thread_id] = s_global_index[thread_id + stride];
         }
         barrier();
     }
 
-    if (tid == 0u) {
-        uint idx = uint(s_gidx[0]);
-        peak[0] = vec2(float(idx % pc.width), float(idx / pc.width));
+    if (thread_id == 0u) {
+        uint linear_index = uint(s_global_index[0]);
+        peak[0] = vec2(float(linear_index % pc.width), float(linear_index / pc.width));
     }
 }

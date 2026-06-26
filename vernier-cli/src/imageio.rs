@@ -25,8 +25,8 @@ pub struct LoadedImage {
 /// depth (stored in 16-bit containers).
 pub fn load_grayscale(path: &Path) -> Result<LoadedImage, String> {
     let img = image::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
-    let (w, h) = img.dimensions();
-    let (w, h) = (w as usize, h as usize);
+    let (img_width, img_height) = img.dimensions();
+    let (width, height) = (img_width as usize, img_height as usize);
 
     // Convert to 16-bit luma to preserve depth, then normalize.
     let luma16 = img.to_luma16();
@@ -36,8 +36,8 @@ pub fn load_grayscale(path: &Path) -> Result<LoadedImage, String> {
         .collect();
 
     Ok(LoadedImage {
-        width: w,
-        height: h,
+        width,
+        height,
         data,
     })
 }

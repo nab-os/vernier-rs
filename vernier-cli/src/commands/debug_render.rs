@@ -58,20 +58,20 @@ pub fn render_spectrum_debug(
     let norm: Vec<f64> = shifted.iter().map(|&v| (v - lo) / span).collect();
 
     let mut canvas = Canvas::from_gray(width, height, &norm);
-    let (cx, cy) = ((width / 2) as isize, (height / 2) as isize);
+    let (center_x, center_y) = ((width / 2) as isize, (height / 2) as isize);
 
     // Low-frequency exclusion disk (cyan): the region peak search ignores.
-    canvas.circle(cx, cy, min_radius as isize, color::CYAN);
+    canvas.circle(center_x, center_y, min_radius as isize, color::CYAN);
 
     // The two detected carriers, in fftshifted coordinates (DC at center).
-    for (dir, col) in [(&detection.dir1, color::RED), (&detection.dir2, color::YELLOW)] {
+    for (dir, draw_color) in [(&detection.dir1, color::RED), (&detection.dir2, color::YELLOW)] {
         let (bx, by) = dir.peak_bin;
         let sx = signed(bx, width);
         let sy = signed(by, height);
         // shifted position = center + signed freq; also mark the conjugate.
-        canvas.circle(cx + sx, cy + sy, 6, col);
-        canvas.cross(cx + sx, cy + sy, 4, col);
-        canvas.circle(cx - sx, cy - sy, 4, col); // conjugate twin (dimmer mark)
+        canvas.circle(center_x + sx, center_y + sy, 6, draw_color);
+        canvas.cross(center_x + sx, center_y + sy, 4, draw_color);
+        canvas.circle(center_x - sx, center_y - sy, 4, draw_color); // conjugate twin (dimmer mark)
     }
 
     canvas.save_png(out)
@@ -106,19 +106,19 @@ pub fn render_decode_debug(
     // To avoid overdrawing, only stamp once per cell: track stamped cells.
     let mut stamped: std::collections::BTreeSet<(i64, i64)> = std::collections::BTreeSet::new();
 
-    for r in 0..height {
-        for c in 0..width {
-            let idx = r * width + c;
-            let fx = phase_x[idx] / TAU;
-            let fy = phase_y[idx] / TAU;
-            let cx = fx.round();
-            let cy = fy.round();
-            let rad = (fx - cx).abs().max((fy - cy).abs());
+    for row in 0..height {
+        for col in 0..width {
+            let flat_index = row * width + col;
+            let fx = phase_x[flat_index] / TAU;
+            let fy = phase_y[flat_index] / TAU;
+            let cell_x = fx.round();
+            let cell_y = fy.round();
+            let within_cell_radius = (fx - cell_x).abs().max((fy - cell_y).abs());
             // Only stamp at cell centers (small within-cell radius).
-            if rad > 0.12 {
+            if within_cell_radius > 0.12 {
                 continue;
             }
-            let cell = (cx as i64, cy as i64);
+            let cell = (cell_x as i64, cell_y as i64);
             if !stamped.insert(cell) {
                 continue;
             }
@@ -129,7 +129,7 @@ pub fn render_decode_debug(
             let x_coding = cell.0.rem_euclid(3) == 1;
             let y_coding = cell.1.rem_euclid(3) == 1;
 
-            let col = if x_coding && y_coding {
+            let draw_color = if x_coding && y_coding {
                 // both coding: blue, the absolute-code corner cells
                 color::BLUE
             } else if x_coding {
@@ -148,7 +148,7 @@ pub fn render_decode_debug(
                 // non-coding carrier cell: faint marker
                 color::CYAN
             };
-            canvas.fill_square(c as isize, r as isize, 2, col, 0.55);
+            canvas.fill_square(col as isize, row as isize, 2, draw_color, 0.55);
         }
     }
 

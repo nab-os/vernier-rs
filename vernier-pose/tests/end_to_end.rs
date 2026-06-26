@@ -8,14 +8,14 @@ use vernier_detection::spectrum::{analyze_direction, forward};
 use vernier_pose::{Calibration, periodic};
 
 /// A horizontal cosine: fundamental along x, fy = 0.
-fn cosine(w: usize, h: usize, k: usize) -> (Vec<Complex32>, BufferLayout) {
+fn cosine(width: usize, height: usize, frequency: usize) -> (Vec<Complex32>, BufferLayout) {
     use std::f32::consts::TAU;
-    let layout = BufferLayout::packed(w, h);
+    let layout = BufferLayout::packed(width, height);
     let mut data = Vec::with_capacity(layout.len());
-    for _r in 0..h {
-        for c in 0..w {
-            let v = (TAU * k as f32 * c as f32 / w as f32).cos();
-            data.push(Complex32::new(v, 0.0));
+    for _row in 0..height {
+        for col in 0..width {
+            let value = (TAU * frequency as f32 * col as f32 / width as f32).cos();
+            data.push(Complex32::new(value, 0.0));
         }
     }
     (data, layout)

@@ -39,6 +39,6 @@ void main() {
     float two_sigma_sq = 2.0 * pc.sigma * pc.sigma;
     float gain = exp(-r2 / two_sigma_sq);
 
-    uint idx = y * pc.width + x;
-    data[idx] *= gain;
+    uint flat_index = y * pc.width + x;
+    data[flat_index] *= gain;
 }
