@@ -7,7 +7,7 @@
 //! positioning — not just the fine phase — actually works on a real image.
 
 use vernier_core::buffer::BufferLayout;
-use vernier_core::{Complex32, ComputeBackend};
+use vernier_core::Complex32;
 use vernier_cpu::CpuBackend;
 use vernier_detection::spectrum::analyze_two;
 use vernier_patterns::PatternPose;
@@ -21,25 +21,25 @@ fn megarena_absolute_roundtrip() {
     let size = 512usize;
     let period = 12.0;
     let order = 8u32;
-    let mut backend = CpuBackend::new();
+    let backend = CpuBackend::new();
 
     // Render an axis-aligned megarena (theta = 0 keeps cell indexing simple for
     // a first end-to-end check; the extraction itself is rotation-general).
     let pattern = Megarena::new(period, order).unwrap();
     let image = pattern.render(size, size, &PatternPose::IDENTITY);
 
-    // Upload as complex.
+    // Prepare complex image data.
     let layout = BufferLayout::packed(size, size);
     let complex: Vec<Complex32> = image
         .as_slice()
         .iter()
         .map(|&v| Complex32::new(v, 0.0))
         .collect();
-    let mut buf = backend.upload(&complex, layout).unwrap();
 
     // Two-direction detection -> phase maps for both axes.
-    // sigma=4.0, no annulus limits (synthetic image, no lighting), no blur, no window.
-    let detection = analyze_two(&mut backend, &mut buf, 4.0, 0, 0, 0.0).unwrap();
+    // sigma=4.0, min_frequency=10 (exclude DC; carrier ≈ 43 bins for period=12 in 512px),
+    // no upper limit, no blur.
+    let detection = analyze_two(&backend, &complex, layout, 4.0, 10, 0, 0.0).unwrap();
 
     // Extract the binary code windows from the image intensities + phase maps.
     let intensity: Vec<f32> = image.as_slice().to_vec();

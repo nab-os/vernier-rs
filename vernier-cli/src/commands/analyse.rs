@@ -12,8 +12,9 @@
 use std::path::{Path, PathBuf};
 
 use vernier_core::buffer::BufferLayout;
-use vernier_core::{Complex32, ComputeBackend, ComputeJob};
+use vernier_core::{Complex32, ComputeJob};
 use vernier_cpu::CpuBackend;
+use vernier_detection::spectrum::analyze_two;
 
 use crate::imageio::load_grayscale;
 
@@ -50,13 +51,10 @@ impl Analyse {
         let backend = CpuBackend::new();
         let layout = BufferLayout::packed(width, height);
         let complex: Vec<Complex32> = img.data.iter().map(|&v| Complex32::new(v, 0.0)).collect();
-        let mut buf = backend
-            .upload(&complex, layout)
-            .map_err(|e| format!("upload failed: {e:?}"))?;
-
         let detection = analyze_two(
             &backend,
-            &mut buf,
+            &complex,
+            layout,
             self.sigma as vernier_core::Real,
             self.min_frequency,
             self.max_frequency,

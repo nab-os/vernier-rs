@@ -1,10 +1,9 @@
 //! The real spectral detection chain, two directions (André et al. 2020/2021).
 
-use vernier_core::buffer::Buffer2D;
-use vernier_core::{ComputeBackend, ComputeJob, Real, Result, VernierError};
+use vernier_core::buffer::{Buffer2D, BufferLayout};
+use vernier_core::{ComputeBackend, ComputeJob, Real, Result, VernierError, Complex32};
 
-use crate::planefit::{PhasePlane, fit_plane_to_unwrapped};
-use crate::unwrap::quarters_unwrap_phase;
+use crate::planefit::PhasePlane;
 
 /// Result of analyzing one pattern direction.
 #[derive(Clone, Copy, Debug)]
@@ -32,100 +31,110 @@ pub fn forward<B: ComputeBackend>(backend: &B, buffer: &mut B::Buffer2D) -> Resu
     job.submit()
 }
 
-/// Analyzes one direction: band-pass at `(cx, cy)`, IFFT, extract phase,
-/// unwrap, fit plane. Returns the fitted result and the per-pixel unwrapped
-/// phase map. `spectrum` is a reference; a deep copy is made inside the job
-/// so the original spectrum is not consumed or modified.
-fn analyze_at<B: ComputeBackend>(
-    backend: &B,
-    spectrum: &B::Buffer2D,
+/// Reconstructs a `DirectionResult` and per-pixel phase map from the 3-element
+/// plane buffer `[Complex32(a,0), Complex32(b,0), Complex32(c,0)]` returned by
+/// `plane_fit_from_ifft`.
+fn finish_direction_from_plane(
+    plane_data: Vec<Complex32>,
+    w: usize,
+    h: usize,
     cx: usize,
     cy: usize,
-    sigma: Real,
 ) -> Result<(DirectionResult, Vec<Real>)> {
-    let layout = spectrum.layout();
-    let (w, h) = (layout.width, layout.height);
-
-    let phase_field = {
-        let mut job = backend.begin()?;
-        let mut spec = job.copy_buffer(spectrum)?;
-        job.bandpass_filter(&mut spec, cx, cy, sigma)?;
-        job.ifft2d(&mut spec)?;
-        let pf = job.extract_phase(&spec)?;
-        job.submit()?;
-        pf
-    };
-
-    let data = backend.download(&phase_field)?;
-    let wrapped: Vec<Real> = data.iter().map(|c| c.re as Real).collect();
-
-    let mut unwrapped = wrapped.clone();
-    quarters_unwrap_phase(&mut unwrapped, w, h);
-    let plane = fit_plane_to_unwrapped(&unwrapped, w, h, 0.5);
+    let a = plane_data[0].re as Real;
+    let b = plane_data[1].re as Real;
+    let c = plane_data[2].re as Real;
+    let plane = PhasePlane { a, b, c };
     let peak = plane.peak_location(w, h);
-
-    Ok((DirectionResult { plane, peak, peak_bin: (cx, cy) }, unwrapped))
+    let hw = w as Real / 2.0;
+    let hh = h as Real / 2.0;
+    let phase: Vec<Real> = (0..h)
+        .flat_map(|row| {
+            (0..w).map(move |col| a * (col as Real - hw) + b * (row as Real - hh) + c)
+        })
+        .collect();
+    Ok((DirectionResult { plane, peak, peak_bin: (cx, cy) }, phase))
 }
 
 /// Analyzes the dominant direction in a pre-computed frequency-domain spectrum.
+///
+/// Single job: peak_search + bandpass + IFFT + GPU plane fit (3 floats downloaded).
 pub fn analyze_direction<B: ComputeBackend>(
     backend: &B,
-    spectrum: B::Buffer2D,
+    mut spectrum: B::Buffer2D,
     sigma: Real,
 ) -> Result<DirectionResult> {
-    let peaks = {
+    let layout = spectrum.layout();
+    let (w, h) = (layout.width, layout.height);
+
+    let (peaks_buf, plane_buf) = {
         let mut job = backend.begin()?;
-        let mut mag = job.copy_buffer(&spectrum)?;
-        let p = job
-            .peak_search(&mut mag, 0, 0, 0.5, sigma)?
+        let peaks_buf = job
+            .peak_search(&mut spectrum, 0, 0, 0.5, sigma)?
             .ok_or_else(|| VernierError::Backend("no carrier peaks found".into()))?;
+        let mut spec = job.copy_buffer(&spectrum)?;
+        job.bandpass_from_peaks(&mut spec, &peaks_buf, 0, sigma)?;
+        job.ifft2d(&mut spec)?;
+        let pf = job.plane_fit_from_ifft(&spec, 0.5)?;
         job.submit()?;
-        p
+        (peaks_buf, pf)
     };
 
-    let raw = backend.download(&peaks)?;
-    let cx = raw[0].re as usize;
-    let cy = raw[1].re as usize;
-    let (dir, _) = analyze_at(backend, &spectrum, cx, cy, sigma)?;
-    Ok(dir)
+    let peaks_data = backend.download(&peaks_buf)?;
+    let cx = peaks_data[0].re as usize;
+    let cy = peaks_data[1].re as usize;
+
+    let plane_data = backend.download(&plane_buf)?;
+    let a = plane_data[0].re as Real;
+    let b = plane_data[1].re as Real;
+    let c = plane_data[2].re as Real;
+    let plane = PhasePlane { a, b, c };
+    let peak = plane.peak_location(w, h);
+    Ok(DirectionResult { plane, peak, peak_bin: (cx, cy) })
 }
 
-/// Forward-transforms `buffer` and analyzes both grid directions.
+/// Uploads `data`, forward-transforms it, and analyzes both grid directions.
+///
+/// Single job: upload + FFT + peak_search + two-direction bandpass/IFFT/GPU plane fit.
+/// Only 10 floats are downloaded after submission (4 peak coords + 3+3 plane coeffs).
 pub fn analyze_two<B: ComputeBackend>(
     backend: &B,
-    buffer: &mut B::Buffer2D,
+    data: &[Complex32],
+    layout: BufferLayout,
     sigma: Real,
     min_frequency: usize,
     max_frequency: usize,
     smoothing_sigma: Real,
 ) -> Result<Detection> {
-    // Phase 1: FFT + two-peak search (all in one job).
-    let buffer_peaks = {
-        let mut job = backend.begin()?;
-        job.fft2d(buffer)?;
-        let p = job
-            .peak_search(buffer, min_frequency, max_frequency, smoothing_sigma, sigma)?
-            .ok_or_else(|| VernierError::Backend("no carrier peaks found in spectrum".into()))?;
-        job.submit()?;
-        p
-    };
-
-    let layout = buffer.layout();
     let (w, h) = (layout.width, layout.height);
 
-    let (cx1, cy1, cx2, cy2) = {
-        let peaks = backend.download(&buffer_peaks)?;
-        (
-            peaks[0].re as usize,
-            peaks[1].re as usize,
-            peaks[2].re as usize,
-            peaks[3].re as usize,
-        )
+    let (peaks_buf, plane_buf1, plane_buf2) = {
+        let mut job = backend.begin()?;
+        let mut buffer = job.upload(data, layout)?;
+        job.fft2d(&mut buffer)?;
+        let peaks_buf = job
+            .peak_search(&mut buffer, min_frequency, max_frequency, smoothing_sigma, sigma)?
+            .ok_or_else(|| VernierError::Backend("no carrier peaks found in spectrum".into()))?;
+        let mut spec1 = job.copy_buffer(&buffer)?;
+        let mut spec2 = job.copy_buffer(&buffer)?;
+        job.bandpass_from_peaks(&mut spec1, &peaks_buf, 0, sigma)?;
+        job.bandpass_from_peaks(&mut spec2, &peaks_buf, 1, sigma)?;
+        job.ifft2d(&mut spec1)?;
+        job.ifft2d(&mut spec2)?;
+        let pf1 = job.plane_fit_from_ifft(&spec1, 0.5)?;
+        let pf2 = job.plane_fit_from_ifft(&spec2, 0.5)?;
+        job.submit()?;
+        (peaks_buf, pf1, pf2)
     };
 
-    // Phase 2: independent bandpass + IFFT for each direction.
-    let (dir1, phase1) = analyze_at(backend, buffer, cx1, cy1, sigma)?;
-    let (dir2, phase2) = analyze_at(backend, buffer, cx2, cy2, sigma)?;
+    let peaks_data = backend.download(&peaks_buf)?;
+    let (cx1, cy1) = (peaks_data[0].re as usize, peaks_data[1].re as usize);
+    let (cx2, cy2) = (peaks_data[2].re as usize, peaks_data[3].re as usize);
+
+    let (dir1, phase1) =
+        finish_direction_from_plane(backend.download(&plane_buf1)?, w, h, cx1, cy1)?;
+    let (dir2, phase2) =
+        finish_direction_from_plane(backend.download(&plane_buf2)?, w, h, cx2, cy2)?;
 
     Ok(Detection { dir1, dir2, phase1, phase2, width: w, height: h })
 }

@@ -45,6 +45,9 @@ struct ComputeContext {
     argmax_global_pipeline: Arc<ComputePipeline>,
     band_angular_filter_pipeline: Arc<ComputePipeline>,
     order_peaks_pipeline: Arc<ComputePipeline>,
+    bandpass_peaks_pipeline: Arc<ComputePipeline>,
+    plane_fit_partial_pipeline: Arc<ComputePipeline>,
+    plane_fit_global_pipeline: Arc<ComputePipeline>,
 }
 
 fn build_pipeline(
@@ -173,6 +176,18 @@ impl GpuBackend {
         );
         let order_peaks_pipeline =
             build_pipeline(device.clone(), peak_search_shader::load(device.clone()).unwrap());
+        let bandpass_peaks_pipeline = build_pipeline(
+            device.clone(),
+            bandpass_peaks_shader::load(device.clone()).unwrap(),
+        );
+        let plane_fit_partial_pipeline = build_pipeline(
+            device.clone(),
+            plane_fit_partial_shader::load(device.clone()).unwrap(),
+        );
+        let plane_fit_global_pipeline = build_pipeline(
+            device.clone(),
+            plane_fit_global_shader::load(device.clone()).unwrap(),
+        );
 
         Self {
             device,
@@ -192,6 +207,9 @@ impl GpuBackend {
                 argmax_global_pipeline,
                 band_angular_filter_pipeline,
                 order_peaks_pipeline,
+                bandpass_peaks_pipeline,
+                plane_fit_partial_pipeline,
+                plane_fit_global_pipeline,
             },
         }
     }
@@ -269,7 +287,7 @@ impl ComputeBackend for GpuBackend {
 
     fn begin(&self) -> Result<GpuJob<'_>> {
         let builder = self.new_builder()?;
-        Ok(GpuJob { backend: self, builder })
+        Ok(GpuJob { backend: self, builder, staging_bufs: Vec::new() })
     }
 
     fn upload(&self, data: &[Complex32], layout: BufferLayout) -> Result<GpuBuffer> {
@@ -353,6 +371,7 @@ impl ComputeBackend for GpuBackend {
 pub struct GpuJob<'a> {
     backend: &'a GpuBackend,
     builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    staging_bufs: Vec<Subbuffer<[Complex32]>>,
 }
 
 impl GpuJob<'_> {
@@ -616,6 +635,46 @@ impl ComputeJob for GpuJob<'_> {
         Ok(())
     }
 
+    fn bandpass_from_peaks(
+        &mut self,
+        buf: &mut GpuBuffer,
+        peaks: &GpuBuffer,
+        direction: u32,
+        sigma: Real,
+    ) -> Result<()> {
+        let (w, h) = (buf.width as u32, buf.height as u32);
+        let ds = self.ds(
+            &self.backend.ccx.bandpass_peaks_pipeline,
+            [
+                WriteDescriptorSet::buffer(0, buf.buffer.clone()),
+                WriteDescriptorSet::buffer(1, peaks.buffer.clone()),
+            ],
+        );
+        self.builder
+            .bind_pipeline_compute(self.backend.ccx.bandpass_peaks_pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.backend.ccx.bandpass_peaks_pipeline.layout().clone(),
+                0,
+                ds,
+            )
+            .unwrap()
+            .push_constants(
+                self.backend.ccx.bandpass_peaks_pipeline.layout().clone(),
+                0,
+                bandpass_peaks_shader::PushConstantData {
+                    width: w,
+                    height: h,
+                    direction,
+                    sigma: sigma as f32,
+                },
+            )
+            .unwrap();
+        unsafe { self.builder.dispatch([(w + 7) / 8, (h + 7) / 8, 1]) }.unwrap();
+        Ok(())
+    }
+
     fn peak_search(
         &mut self,
         buffer: &mut GpuBuffer,
@@ -851,6 +910,111 @@ impl ComputeJob for GpuJob<'_> {
         Ok(Some(GpuBuffer { buffer: result_buf, width: 2, height: 2 }))
     }
 
+    fn upload(&mut self, data: &[Complex32], layout: BufferLayout) -> Result<GpuBuffer> {
+        if !layout.is_contiguous() {
+            return Err(VernierError::NonContiguous {
+                stride: layout.row_stride,
+                width: layout.width,
+            });
+        }
+        let n = layout.width * layout.height;
+        let staging = Buffer::from_iter(
+            self.backend.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST,
+                ..Default::default()
+            },
+            data.iter().copied(),
+        )
+        .map_err(|e| VernierError::Backend(e.to_string()))?;
+        let device_buf = self.alloc(n.next_power_of_two());
+        self.builder
+            .copy_buffer(CopyBufferInfo::buffers(staging.clone(), device_buf.clone()))
+            .map_err(|e| VernierError::Backend(e.to_string()))?;
+        self.staging_bufs.push(staging);
+        Ok(GpuBuffer { buffer: device_buf, width: layout.width, height: layout.height })
+    }
+
+    fn plane_fit_from_ifft(&mut self, buf: &GpuBuffer, crop_factor: Real) -> Result<GpuBuffer> {
+        let (w, h) = (buf.width, buf.height);
+        let margin_x = ((w as Real * crop_factor / 2.0).round() as usize).min(w / 2);
+        let margin_y = ((h as Real * crop_factor / 2.0).round() as usize).min(h / 2);
+        let x0 = margin_x as u32;
+        let y0 = margin_y as u32;
+        let x1 = (w - margin_x) as u32;
+        let y1 = (h - margin_y) as u32;
+
+        let gx = (w as u32 + 7) / 8;
+        let gy = (h as u32 + 7) / 8;
+        let n_groups = gx * gy;
+        let partials = self.alloc(n_groups as usize * 2);
+        let ds_partial = self.ds(
+            &self.backend.ccx.plane_fit_partial_pipeline,
+            [
+                WriteDescriptorSet::buffer(0, buf.buffer.clone()),
+                WriteDescriptorSet::buffer(1, partials.clone()),
+            ],
+        );
+        self.builder
+            .bind_pipeline_compute(self.backend.ccx.plane_fit_partial_pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.backend.ccx.plane_fit_partial_pipeline.layout().clone(),
+                0,
+                ds_partial,
+            )
+            .unwrap()
+            .push_constants(
+                self.backend.ccx.plane_fit_partial_pipeline.layout().clone(),
+                0,
+                plane_fit_partial_shader::PushConstantData {
+                    width: w as u32,
+                    height: h as u32,
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                },
+            )
+            .unwrap();
+        unsafe { self.builder.dispatch([gx, gy, 1]) }.unwrap();
+
+        let result = self.alloc(3);
+        let center_idx = ((h / 2) * w + w / 2) as u32;
+        let ds_global = self.ds(
+            &self.backend.ccx.plane_fit_global_pipeline,
+            [
+                WriteDescriptorSet::buffer(0, buf.buffer.clone()),
+                WriteDescriptorSet::buffer(1, partials.clone()),
+                WriteDescriptorSet::buffer(2, result.clone()),
+            ],
+        );
+        self.builder
+            .bind_pipeline_compute(self.backend.ccx.plane_fit_global_pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.backend.ccx.plane_fit_global_pipeline.layout().clone(),
+                0,
+                ds_global,
+            )
+            .unwrap()
+            .push_constants(
+                self.backend.ccx.plane_fit_global_pipeline.layout().clone(),
+                0,
+                plane_fit_global_shader::PushConstantData { n_groups, center_idx },
+            )
+            .unwrap();
+        unsafe { self.builder.dispatch([1, 1, 1]) }.unwrap();
+
+        Ok(GpuBuffer { buffer: result, width: 3, height: 1 })
+    }
+
     fn submit(self) -> Result<()> {
         self.backend.submit_one_shot(self.builder)
     }
@@ -892,6 +1056,15 @@ mod argmax_global_shader {
 }
 mod band_angular_filter_shader {
     vulkano_shaders::shader! { ty: "compute", path: "src/shaders/band_angular_filter.glsl", include: ["."], spirv_version: "1.3" }
+}
+mod bandpass_peaks_shader {
+    vulkano_shaders::shader! { ty: "compute", path: "src/shaders/bandpass_peaks.glsl", include: ["."], spirv_version: "1.3" }
+}
+mod plane_fit_partial_shader {
+    vulkano_shaders::shader! { ty: "compute", path: "src/shaders/plane_fit_partial.glsl", include: ["."], spirv_version: "1.3" }
+}
+mod plane_fit_global_shader {
+    vulkano_shaders::shader! { ty: "compute", path: "src/shaders/plane_fit_global.glsl", include: ["."], spirv_version: "1.3" }
 }
 
 // ---------------------------------------------------------------------------

@@ -65,17 +65,13 @@ impl BackendTask for Benchmark {
         let smoothing = self.smoothing_sigma as Real;
 
         // Warm-up: prime any FFT planning or GPU pipeline caches.
-        {
-            let mut buf = backend.upload(&complex, layout).unwrap();
-            let _ = analyze_two(backend, &mut buf, sigma, self.min_frequency, self.max_frequency, smoothing);
-        }
+        let _ = analyze_two(backend, &complex, layout, sigma, self.min_frequency, self.max_frequency, smoothing);
 
         let mut best = f64::INFINITY;
         let mut total = 0.0;
         for _ in 0..self.iterations {
             let start = Instant::now();
-            let mut buf = backend.upload(&complex, layout).unwrap();
-            analyze_two(backend, &mut buf, sigma, self.min_frequency, self.max_frequency, smoothing)
+            analyze_two(backend, &complex, layout, sigma, self.min_frequency, self.max_frequency, smoothing)
                 .expect("detection failed during benchmark");
             let ms = start.elapsed().as_secs_f64() * 1e3;
             total += ms;

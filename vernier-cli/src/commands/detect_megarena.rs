@@ -68,12 +68,14 @@ impl BackendTask for DetectMegarena {
         let img = load_grayscale(&self.image_path).expect("failed to load image");
         let (width, height) = (img.width, img.height);
         let gray = GrayImage::from_vec(width, height, img.data).expect("image dimensions mismatch");
-        let mut buf = backend.upload_real(&gray).expect("upload failed");
+        let data = gray.to_complex();
+        let layout = gray.layout();
 
         // Two-direction detection -> phase planes + phase maps.
         let detection = analyze_two(
             backend,
-            &mut buf,
+            &data,
+            layout,
             self.sigma as Real,
             self.min_frequency,
             self.max_frequency,

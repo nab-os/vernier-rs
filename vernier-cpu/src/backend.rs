@@ -110,6 +110,12 @@ impl CpuJob<'_> {
                 continue;
             }
             for fx in 0..width {
+                let sfx = signed(fx, width);
+                // Proper halfplane: sfy > 0, or (sfy == 0 and sfx > 0).
+                // Excludes DC and the conjugate-mirror boundary row.
+                if sfy == 0 && sfx <= 0 {
+                    continue;
+                }
                 let m = buffer.as_slice()[fy * width + fx].re;
                 if m > best {
                     best = m;
@@ -142,6 +148,10 @@ impl CpuJob<'_> {
             let sfy = sfy_i as Real;
             for fx in 0..width {
                 let sfx_i = signed(fx, width);
+                // Proper halfplane: sfy > 0, or (sfy == 0 and sfx > 0).
+                if sfy_i == 0 && sfx_i <= 0 {
+                    continue;
+                }
                 let sfx = sfx_i as Real;
                 let angle = sfy.atan2(sfx);
                 let diff = ((angle - center_angle + PI).rem_euclid(TAU)) - PI;
@@ -161,6 +171,10 @@ impl CpuJob<'_> {
 
 impl ComputeJob for CpuJob<'_> {
     type Buffer2D = CpuBuffer;
+
+    fn upload(&mut self, data: &[Complex32], layout: BufferLayout) -> Result<CpuBuffer> {
+        self.backend.upload(data, layout)
+    }
 
     fn copy_buffer(&mut self, src: &CpuBuffer) -> Result<CpuBuffer> {
         Ok(src.clone())
@@ -243,6 +257,19 @@ impl ComputeJob for CpuJob<'_> {
         }
 
         Ok(())
+    }
+
+    fn bandpass_from_peaks(
+        &mut self,
+        buf: &mut CpuBuffer,
+        peaks: &CpuBuffer,
+        direction: u32,
+        sigma: Real,
+    ) -> Result<()> {
+        let base = direction as usize * 2;
+        let cx = peaks.as_slice()[base].re as usize;
+        let cy = peaks.as_slice()[base + 1].re as usize;
+        self.bandpass_filter(buf, cx, cy, sigma)
     }
 
     fn bandpass_filter(
@@ -361,6 +388,49 @@ impl ComputeJob for CpuJob<'_> {
             ],
             BufferLayout { width: 2, height: 2, row_stride: 2 },
         ))
+    }
+
+    fn plane_fit_from_ifft(&mut self, buf: &CpuBuffer, crop_factor: Real) -> Result<CpuBuffer> {
+        let layout = buf.layout();
+        let (w, h) = (layout.width, layout.height);
+        let x0 = ((w as Real * crop_factor) / 2.0) as usize;
+        let y0 = ((h as Real * crop_factor) / 2.0) as usize;
+        let x1 = w - x0;
+        let y1 = h - y0;
+
+        let z = buf.as_slice();
+        let (mut da_sum, mut da_cnt) = (0.0f64, 0.0f64);
+        let (mut db_sum, mut db_cnt) = (0.0f64, 0.0f64);
+
+        for fy in y0..y1 {
+            for fx in x0..x1 {
+                let z0 = z[fy * w + fx];
+                if fx + 1 < x1 {
+                    let z1 = z[fy * w + fx + 1];
+                    let cross = z1.im as f64 * z0.re as f64 - z1.re as f64 * z0.im as f64;
+                    let dot   = z1.re as f64 * z0.re as f64 + z1.im as f64 * z0.im as f64;
+                    da_sum += cross.atan2(dot);
+                    da_cnt += 1.0;
+                }
+                if fy + 1 < y1 {
+                    let z1 = z[(fy + 1) * w + fx];
+                    let cross = z1.im as f64 * z0.re as f64 - z1.re as f64 * z0.im as f64;
+                    let dot   = z1.re as f64 * z0.re as f64 + z1.im as f64 * z0.im as f64;
+                    db_sum += cross.atan2(dot);
+                    db_cnt += 1.0;
+                }
+            }
+        }
+
+        let a = if da_cnt > 0.0 { (da_sum / da_cnt) as f32 } else { 0.0 };
+        let b = if db_cnt > 0.0 { (db_sum / db_cnt) as f32 } else { 0.0 };
+        let zc = z[(h / 2) * w + (w / 2)];
+        let c = zc.im.atan2(zc.re);
+
+        Ok(CpuBuffer::from_slice(
+            &[Complex32::new(a, 0.0), Complex32::new(b, 0.0), Complex32::new(c, 0.0)],
+            vernier_core::buffer::BufferLayout { width: 3, height: 1, row_stride: 3 },
+        ).unwrap())
     }
 
     fn submit(self) -> Result<()> {

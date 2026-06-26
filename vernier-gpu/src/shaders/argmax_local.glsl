@@ -41,8 +41,9 @@ void main() {
         int sfx = signed_freq(x, pc.width);
         int sfy = signed_freq(y, pc.height);
 
-        // Upper half-plane (signed fy >= 0), excluding DC.
-        bool valid = (sfy >= 0) && !(sfx == 0 && sfy == 0);
+        // Proper upper half-plane: sfy > 0, or (sfy == 0 and sfx > 0).
+        // Excludes DC and conjugate-mirror duplicates on the boundary row.
+        bool valid = (sfy > 0) || (sfy == 0 && sfx > 0);
         if (valid) {
             best_mag  = src[gidx].x;
             best_gidx = float(gidx);

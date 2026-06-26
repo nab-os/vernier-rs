@@ -38,6 +38,11 @@ pub trait ComputeJob {
     /// The buffer type this job operates on (must match the backend's `Buffer2D`).
     type Buffer2D;
 
+    /// Uploads `data` into a new device buffer as part of this job's command
+    /// stream, queuing the staging copy alongside subsequent compute dispatches
+    /// rather than in a separate blocking submission.
+    fn upload(&mut self, data: &[Complex32], layout: BufferLayout) -> Result<Self::Buffer2D>;
+
     /// Produces a deep copy of `src` as a new, independently-writable buffer.
     ///
     /// On GPU this queues a `copy_buffer` command; on CPU it clones the underlying
@@ -57,6 +62,21 @@ pub trait ComputeJob {
         buf: &mut Self::Buffer2D,
         cx: usize,
         cy: usize,
+        sigma: Real,
+    ) -> Result<()>;
+
+    /// Gaussian band-pass filter reading the carrier bin from a GPU-resident
+    /// peaks buffer (the output of `peak_search`).  `direction` selects which
+    /// pair: 0 → `peaks[0..1]` = (cx1, cy1), 1 → `peaks[2..3]` = (cx2, cy2).
+    ///
+    /// On the CPU this reads the coordinates synchronously from the slice and
+    /// delegates to `bandpass_filter`.  On the GPU it binds the peaks buffer
+    /// directly and avoids a host round-trip.
+    fn bandpass_from_peaks(
+        &mut self,
+        buf: &mut Self::Buffer2D,
+        peaks: &Self::Buffer2D,
+        direction: u32,
         sigma: Real,
     ) -> Result<()>;
 
@@ -85,6 +105,13 @@ pub trait ComputeJob {
         smoothing_sigma: Real,
         sigma: Real,
     ) -> Result<Option<Self::Buffer2D>>;
+
+    /// Computes the phase-plane coefficients (a, b, c) from the complex IFFT
+    /// output `buf` using per-pixel phase gradients, without unwrapping.
+    ///
+    /// Returns a 3-element buffer: `[Complex32(a,0), Complex32(b,0), Complex32(c,0)]`.
+    /// `crop_factor ∈ [0,1)` trims edges before accumulation (0.5 = center half).
+    fn plane_fit_from_ifft(&mut self, buf: &Self::Buffer2D, crop_factor: Real) -> Result<Self::Buffer2D>;
 
     /// Executes all queued operations and waits for completion.
     ///
