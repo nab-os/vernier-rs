@@ -110,17 +110,8 @@ fn main() {
                 r.true_x, r.true_y, r.true_theta
             );
             println!(
-                "           fine_x={:.4}  fine_y={:.4}",
-                r.true_fine_x, r.true_fine_y
-            );
-            println!(
                 "recovered: x={:.4}  y={:.4}  θ={:.6} rad",
                 r.recovered_x, r.recovered_y, r.recovered_theta
-            );
-            println!(
-                "           fine_x={:.4}  fine_y={:.4}  (x_ps={}  y_ps={}  k1={}  k2={}  k3={})",
-                r.recovered_fine_x, r.recovered_fine_y,
-                r.x_ps, r.y_ps, r.k1, r.k2, r.k3
             );
             println!(
                 "error abs: Δx={:.4}px  Δy={:.4}px  Δθ={:.2e} rad",

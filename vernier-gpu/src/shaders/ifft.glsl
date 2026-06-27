@@ -6,7 +6,7 @@
 //   pass=0  →  row pass,    dispatch [1,      height, 1]
 //   pass=1  →  column pass, dispatch [width,  1,      1]
 //
-// For power-of-two N ≤ 2048: Cooley-Tukey DIT (positive twiddle, scale 1/N per pass).
+// For power-of-two N ≤ 4096: Cooley-Tukey DIT (positive twiddle, scale 1/N per pass).
 // For other N             : direct IDFT (O(N²), same normalization).
 //
 // Combined normalization across both passes = 1/(W × H), matching rustfft.
@@ -21,7 +21,7 @@ layout(push_constant) uniform PushConstantData {
     uint pass;
 } pc;
 
-shared vec2 s[2048];
+shared vec2 s[4096];
 
 const float TAU = 6.28318530717958647692;
 
@@ -45,26 +45,32 @@ void main() {
     if (pc.pass == 0u) {
         transform_size = pc.width;
         uint base = gl_WorkGroupID.y * pc.width;
-        if (thread_id < transform_size)          s[thread_id]          = data[base + thread_id];
-        if (thread_id + 1024u < transform_size)  s[thread_id + 1024u]  = data[base + thread_id + 1024u];
+        if (thread_id          < transform_size) s[thread_id]          = data[base + thread_id];
+        if (thread_id + 1024u  < transform_size) s[thread_id + 1024u]  = data[base + thread_id + 1024u];
+        if (thread_id + 2048u  < transform_size) s[thread_id + 2048u]  = data[base + thread_id + 2048u];
+        if (thread_id + 3072u  < transform_size) s[thread_id + 3072u]  = data[base + thread_id + 3072u];
     } else {
         transform_size = pc.height;
         uint col = gl_WorkGroupID.x;
-        if (thread_id < transform_size)          s[thread_id]          = data[thread_id         * pc.width + col];
-        if (thread_id + 1024u < transform_size)  s[thread_id + 1024u]  = data[(thread_id+1024u) * pc.width + col];
+        if (thread_id          < transform_size) s[thread_id]          = data[thread_id          * pc.width + col];
+        if (thread_id + 1024u  < transform_size) s[thread_id + 1024u]  = data[(thread_id + 1024u) * pc.width + col];
+        if (thread_id + 2048u  < transform_size) s[thread_id + 2048u]  = data[(thread_id + 2048u) * pc.width + col];
+        if (thread_id + 3072u  < transform_size) s[thread_id + 3072u]  = data[(thread_id + 3072u) * pc.width + col];
     }
     barrier();
 
     float scale = 1.0 / float(transform_size);
 
     // ---- Choose algorithm based on whether N is a power of two ------------
-    if (is_pow2(transform_size) && transform_size <= 2048u) {
+    if (is_pow2(transform_size) && transform_size <= 4096u) {
         // ---- Cooley-Tukey IDIT (in-place on s[]) --------------------------
         uint bits = 0u;
         for (uint t = transform_size; t > 1u; t >>= 1u) bits++;
 
-        if (thread_id < transform_size)         { uint rev=bit_reverse(thread_id,bits);       if(rev>thread_id)        {vec2 tmp=s[thread_id];      s[thread_id]=s[rev];      s[rev]=tmp;} }
-        if (thread_id+1024u < transform_size)   { uint rev=bit_reverse(thread_id+1024u,bits); if(rev>thread_id+1024u)  {vec2 tmp=s[thread_id+1024u];s[thread_id+1024u]=s[rev];s[rev]=tmp;} }
+        if (thread_id          < transform_size) { uint rev = bit_reverse(thread_id,          bits); if (rev > thread_id)          { vec2 tmp = s[thread_id];         s[thread_id]         = s[rev]; s[rev] = tmp; } }
+        if (thread_id + 1024u  < transform_size) { uint rev = bit_reverse(thread_id + 1024u,  bits); if (rev > thread_id + 1024u)  { vec2 tmp = s[thread_id + 1024u]; s[thread_id + 1024u] = s[rev]; s[rev] = tmp; } }
+        if (thread_id + 2048u  < transform_size) { uint rev = bit_reverse(thread_id + 2048u,  bits); if (rev > thread_id + 2048u)  { vec2 tmp = s[thread_id + 2048u]; s[thread_id + 2048u] = s[rev]; s[rev] = tmp; } }
+        if (thread_id + 3072u  < transform_size) { uint rev = bit_reverse(thread_id + 3072u,  bits); if (rev > thread_id + 3072u)  { vec2 tmp = s[thread_id + 3072u]; s[thread_id + 3072u] = s[rev]; s[rev] = tmp; } }
         barrier();
 
         for (uint size = 2u; size <= transform_size; size <<= 1u) {
@@ -83,12 +89,16 @@ void main() {
         // Scale by 1/N and write back
         if (pc.pass == 0u) {
             uint base = gl_WorkGroupID.y * pc.width;
-            if (thread_id < transform_size)          data[base + thread_id]         = s[thread_id]         * scale;
-            if (thread_id+1024u < transform_size)    data[base + thread_id+1024u]   = s[thread_id+1024u]   * scale;
+            if (thread_id          < transform_size) data[base + thread_id]          = s[thread_id]          * scale;
+            if (thread_id + 1024u  < transform_size) data[base + thread_id + 1024u]  = s[thread_id + 1024u]  * scale;
+            if (thread_id + 2048u  < transform_size) data[base + thread_id + 2048u]  = s[thread_id + 2048u]  * scale;
+            if (thread_id + 3072u  < transform_size) data[base + thread_id + 3072u]  = s[thread_id + 3072u]  * scale;
         } else {
             uint col = gl_WorkGroupID.x;
-            if (thread_id < transform_size)          data[thread_id         * pc.width + col] = s[thread_id]         * scale;
-            if (thread_id+1024u < transform_size)    data[(thread_id+1024u) * pc.width + col] = s[thread_id+1024u]   * scale;
+            if (thread_id          < transform_size) data[thread_id          * pc.width + col] = s[thread_id]          * scale;
+            if (thread_id + 1024u  < transform_size) data[(thread_id + 1024u) * pc.width + col] = s[thread_id + 1024u]  * scale;
+            if (thread_id + 2048u  < transform_size) data[(thread_id + 2048u) * pc.width + col] = s[thread_id + 2048u]  * scale;
+            if (thread_id + 3072u  < transform_size) data[(thread_id + 3072u) * pc.width + col] = s[thread_id + 3072u]  * scale;
         }
 
     } else {

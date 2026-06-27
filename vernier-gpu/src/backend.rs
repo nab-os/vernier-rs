@@ -26,6 +26,20 @@ use vulkano::pipeline::{
 use vulkano::sync::GpuFuture;
 use vulkano::{VulkanLibrary, sync};
 
+fn is_pow2(n: usize) -> bool {
+    n > 0 && (n & (n - 1)) == 0
+}
+
+/// Next power-of-two ≥ 2*n−1 for Bluestein's algorithm (n must be ≥ 1).
+fn bluestein_m(n: usize) -> usize {
+    let min = 2 * n - 1;
+    let mut m = 1usize;
+    while m < min {
+        m <<= 1;
+    }
+    m
+}
+
 use crate::buffer::GpuBuffer;
 
 // ---------------------------------------------------------------------------
@@ -50,6 +64,9 @@ struct ComputeContext {
     plane_fit_global_pipeline: Arc<ComputePipeline>,
     spectral_plane_fit_partial_pipeline: Arc<ComputePipeline>,
     spectral_plane_fit_global_pipeline: Arc<ComputePipeline>,
+    bluestein_pre_pipeline: Arc<ComputePipeline>,
+    bluestein_pointwise_pipeline: Arc<ComputePipeline>,
+    bluestein_post_pipeline: Arc<ComputePipeline>,
 }
 
 fn build_pipeline(
@@ -210,6 +227,18 @@ impl GpuBackend {
             device.clone(),
             spectral_plane_fit_global_shader::load(device.clone()).unwrap(),
         );
+        let bluestein_pre_pipeline = build_pipeline(
+            device.clone(),
+            bluestein_pre_shader::load(device.clone()).unwrap(),
+        );
+        let bluestein_pointwise_pipeline = build_pipeline(
+            device.clone(),
+            bluestein_pointwise_shader::load(device.clone()).unwrap(),
+        );
+        let bluestein_post_pipeline = build_pipeline(
+            device.clone(),
+            bluestein_post_shader::load(device.clone()).unwrap(),
+        );
 
         Self {
             device,
@@ -234,6 +263,9 @@ impl GpuBackend {
                 plane_fit_global_pipeline,
                 spectral_plane_fit_partial_pipeline,
                 spectral_plane_fit_global_pipeline,
+                bluestein_pre_pipeline,
+                bluestein_pointwise_pipeline,
+                bluestein_post_pipeline,
             },
         }
     }
@@ -416,6 +448,155 @@ impl GpuJob<'_> {
     }
 }
 
+impl GpuJob<'_> {
+    /// Bluestein chirp-Z 1D FFT/IFFT of one dimension of `data_buf`.
+    ///
+    /// AutoCommandBufferBuilder automatically inserts the required memory barriers between
+    /// dispatches that share storage buffers, so no explicit barrier calls are needed here.
+    ///
+    /// `pass=0` transforms along the width (row pass),
+    /// `pass=1` transforms along the height (column pass).
+    /// `is_inverse=0` → forward DFT, `is_inverse=1` → normalized inverse DFT.
+    fn bluestein_pass(
+        &mut self,
+        data_buf: Subbuffer<[Complex32]>,
+        width: usize,
+        height: usize,
+        pass: u32,
+        is_inverse: u32,
+    ) -> Result<()> {
+        let (n, n_transforms) = if pass == 0 {
+            (width, height)
+        } else {
+            (height, width)
+        };
+        let m = bluestein_m(n);
+
+        // work_a: n_transforms × M (row pass) or M × n_transforms (col pass)
+        let work_a_size = n_transforms * m;
+        let work_a = self.backend.alloc_device_buffer(work_a_size);
+        // work_b: M elements (the chirp sequence, 1D)
+        let work_b = self.backend.alloc_device_buffer(m);
+
+        // --- Step 1: pre-weight data → work_a, compute b_circ → work_b ------
+        let pre_total = work_a_size;
+        let ds_pre = self.backend.make_descriptor_set(
+            &self.backend.ccx.bluestein_pre_pipeline,
+            [
+                WriteDescriptorSet::buffer(0, data_buf.clone()),
+                WriteDescriptorSet::buffer(1, work_a.clone()),
+                WriteDescriptorSet::buffer(2, work_b.clone()),
+            ],
+        );
+        self.builder
+            .bind_pipeline_compute(self.backend.ccx.bluestein_pre_pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.bluestein_pre_pipeline.layout().clone(), 0, ds_pre)
+            .unwrap()
+            .push_constants(self.backend.ccx.bluestein_pre_pipeline.layout().clone(), 0,
+                bluestein_pre_shader::PushConstantData { N: n as u32, M: m as u32, width: width as u32, height: height as u32, pass, is_inverse })
+            .unwrap();
+        let pre_groups = pre_total.div_ceil(256);
+        unsafe { self.builder.dispatch([pre_groups as u32, 1, 1]) }.unwrap();
+
+        // --- Step 2a: FFT work_a (M-length PoT transforms) -------------------
+        // Row pass:  work_a is (height × M) → FFT each row (pass=0, width=M, height=height)
+        // Col pass:  work_a is (M × width)  → FFT each column (pass=1, width=width, height=M)
+        let (fft_w, fft_h, fft_pass, fft_dispatch) = if pass == 0 {
+            (m as u32, height as u32, 0u32, [1u32, height as u32, 1u32])
+        } else {
+            (width as u32, m as u32, 1u32, [width as u32, 1u32, 1u32])
+        };
+        let ds_fft_a = self.backend.make_descriptor_set(
+            &self.backend.ccx.fft_pipeline,
+            [WriteDescriptorSet::buffer(0, work_a.clone())],
+        );
+        self.builder
+            .bind_pipeline_compute(self.backend.ccx.fft_pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.fft_pipeline.layout().clone(), 0, ds_fft_a)
+            .unwrap()
+            .push_constants(self.backend.ccx.fft_pipeline.layout().clone(), 0,
+                fft_shader::PushConstantData { width: fft_w, height: fft_h, pass: fft_pass })
+            .unwrap();
+        unsafe { self.builder.dispatch(fft_dispatch) }.unwrap();
+
+        // --- Step 2b: FFT work_b (single M-length row) -----------------------
+        let ds_fft_b = self.backend.make_descriptor_set(
+            &self.backend.ccx.fft_pipeline,
+            [WriteDescriptorSet::buffer(0, work_b.clone())],
+        );
+        self.builder
+            .bind_pipeline_compute(self.backend.ccx.fft_pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.fft_pipeline.layout().clone(), 0, ds_fft_b)
+            .unwrap()
+            .push_constants(self.backend.ccx.fft_pipeline.layout().clone(), 0,
+                fft_shader::PushConstantData { width: m as u32, height: 1, pass: 0 })
+            .unwrap();
+        unsafe { self.builder.dispatch([1, 1, 1]) }.unwrap();
+
+        // --- Step 3: pointwise multiply work_a *= work_b ---------------------
+        // pass=0: work_b_idx = i % M    (period = M)
+        // pass=1: work_b_idx = i / width (period = width)
+        let pw_period = if pass == 0 { m as u32 } else { width as u32 };
+        let ds_pw = self.backend.make_descriptor_set(
+            &self.backend.ccx.bluestein_pointwise_pipeline,
+            [
+                WriteDescriptorSet::buffer(0, work_a.clone()),
+                WriteDescriptorSet::buffer(1, work_b.clone()),
+            ],
+        );
+        self.builder
+            .bind_pipeline_compute(self.backend.ccx.bluestein_pointwise_pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.bluestein_pointwise_pipeline.layout().clone(), 0, ds_pw)
+            .unwrap()
+            .push_constants(self.backend.ccx.bluestein_pointwise_pipeline.layout().clone(), 0,
+                bluestein_pointwise_shader::PushConstantData { n_elements: work_a_size as u32, period: pw_period, pass })
+            .unwrap();
+        let pw_groups = work_a_size.div_ceil(256);
+        unsafe { self.builder.dispatch([pw_groups as u32, 1, 1]) }.unwrap();
+
+        // --- Step 4: IFFT work_a (M-length PoT) ------------------------------
+        let (ifft_w, ifft_h, ifft_pass, ifft_dispatch) = (fft_w, fft_h, fft_pass, fft_dispatch);
+        let ds_ifft_a = self.backend.make_descriptor_set(
+            &self.backend.ccx.ifft_pipeline,
+            [WriteDescriptorSet::buffer(0, work_a.clone())],
+        );
+        self.builder
+            .bind_pipeline_compute(self.backend.ccx.ifft_pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.ifft_pipeline.layout().clone(), 0, ds_ifft_a)
+            .unwrap()
+            .push_constants(self.backend.ccx.ifft_pipeline.layout().clone(), 0,
+                ifft_shader::PushConstantData { width: ifft_w, height: ifft_h, pass: ifft_pass })
+            .unwrap();
+        unsafe { self.builder.dispatch(ifft_dispatch) }.unwrap();
+
+        // --- Step 5: post-weight and extract N elements back into data_buf ---
+        let ds_post = self.backend.make_descriptor_set(
+            &self.backend.ccx.bluestein_post_pipeline,
+            [
+                WriteDescriptorSet::buffer(0, data_buf.clone()),
+                WriteDescriptorSet::buffer(1, work_a.clone()),
+            ],
+        );
+        self.builder
+            .bind_pipeline_compute(self.backend.ccx.bluestein_post_pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.bluestein_post_pipeline.layout().clone(), 0, ds_post)
+            .unwrap()
+            .push_constants(self.backend.ccx.bluestein_post_pipeline.layout().clone(), 0,
+                bluestein_post_shader::PushConstantData { N: n as u32, M: m as u32, width: width as u32, height: height as u32, pass, is_inverse })
+            .unwrap();
+        let post_groups = (width * height).div_ceil(256);
+        unsafe { self.builder.dispatch([post_groups as u32, 1, 1]) }.unwrap();
+
+        Ok(())
+    }
+}
+
 impl ComputeJob for GpuJob<'_> {
     type Buffer2D = GpuBuffer;
 
@@ -436,43 +617,43 @@ impl ComputeJob for GpuJob<'_> {
         if width > 2048 || height > 2048 {
             return Err(VernierError::UnsupportedSize(width, height));
         }
-        let descriptor_set = self.descriptor_set(
-            &self.backend.ccx.fft_pipeline,
-            [WriteDescriptorSet::buffer(0, buf.buffer.clone())],
-        );
-        self.builder
-            .bind_pipeline_compute(self.backend.ccx.fft_pipeline.clone())
-            .unwrap()
-            .bind_descriptor_sets(
-                PipelineBindPoint::Compute,
-                self.backend.ccx.fft_pipeline.layout().clone(),
-                0,
-                descriptor_set,
-            )
-            .unwrap()
-            .push_constants(
-                self.backend.ccx.fft_pipeline.layout().clone(),
-                0,
-                fft_shader::PushConstantData {
-                    width: width as u32,
-                    height: height as u32,
-                    pass: 0,
-                },
-            )
-            .unwrap();
-        unsafe { self.builder.dispatch([1, height as u32, 1]) }.unwrap();
-        self.builder
-            .push_constants(
-                self.backend.ccx.fft_pipeline.layout().clone(),
-                0,
-                fft_shader::PushConstantData {
-                    width: width as u32,
-                    height: height as u32,
-                    pass: 1,
-                },
-            )
-            .unwrap();
-        unsafe { self.builder.dispatch([width as u32, 1, 1]) }.unwrap();
+
+        // Row pass
+        if is_pow2(width) {
+            let ds = self.descriptor_set(
+                &self.backend.ccx.fft_pipeline,
+                [WriteDescriptorSet::buffer(0, buf.buffer.clone())],
+            );
+            self.builder
+                .bind_pipeline_compute(self.backend.ccx.fft_pipeline.clone())
+                .unwrap()
+                .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.fft_pipeline.layout().clone(), 0, ds)
+                .unwrap()
+                .push_constants(self.backend.ccx.fft_pipeline.layout().clone(), 0, fft_shader::PushConstantData { width: width as u32, height: height as u32, pass: 0 })
+                .unwrap();
+            unsafe { self.builder.dispatch([1, height as u32, 1]) }.unwrap();
+        } else {
+            self.bluestein_pass(buf.buffer.clone(), width, height, 0, 0)?;
+        }
+
+        // Column pass
+        if is_pow2(height) {
+            let ds = self.descriptor_set(
+                &self.backend.ccx.fft_pipeline,
+                [WriteDescriptorSet::buffer(0, buf.buffer.clone())],
+            );
+            self.builder
+                .bind_pipeline_compute(self.backend.ccx.fft_pipeline.clone())
+                .unwrap()
+                .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.fft_pipeline.layout().clone(), 0, ds)
+                .unwrap()
+                .push_constants(self.backend.ccx.fft_pipeline.layout().clone(), 0, fft_shader::PushConstantData { width: width as u32, height: height as u32, pass: 1 })
+                .unwrap();
+            unsafe { self.builder.dispatch([width as u32, 1, 1]) }.unwrap();
+        } else {
+            self.bluestein_pass(buf.buffer.clone(), width, height, 1, 0)?;
+        }
+
         Ok(())
     }
 
@@ -481,43 +662,43 @@ impl ComputeJob for GpuJob<'_> {
         if width > 2048 || height > 2048 {
             return Err(VernierError::UnsupportedSize(width, height));
         }
-        let descriptor_set = self.descriptor_set(
-            &self.backend.ccx.ifft_pipeline,
-            [WriteDescriptorSet::buffer(0, buf.buffer.clone())],
-        );
-        self.builder
-            .bind_pipeline_compute(self.backend.ccx.ifft_pipeline.clone())
-            .unwrap()
-            .bind_descriptor_sets(
-                PipelineBindPoint::Compute,
-                self.backend.ccx.ifft_pipeline.layout().clone(),
-                0,
-                descriptor_set,
-            )
-            .unwrap()
-            .push_constants(
-                self.backend.ccx.ifft_pipeline.layout().clone(),
-                0,
-                ifft_shader::PushConstantData {
-                    width: width as u32,
-                    height: height as u32,
-                    pass: 0,
-                },
-            )
-            .unwrap();
-        unsafe { self.builder.dispatch([1, height as u32, 1]) }.unwrap();
-        self.builder
-            .push_constants(
-                self.backend.ccx.ifft_pipeline.layout().clone(),
-                0,
-                ifft_shader::PushConstantData {
-                    width: width as u32,
-                    height: height as u32,
-                    pass: 1,
-                },
-            )
-            .unwrap();
-        unsafe { self.builder.dispatch([width as u32, 1, 1]) }.unwrap();
+
+        // Row pass
+        if is_pow2(width) {
+            let ds = self.descriptor_set(
+                &self.backend.ccx.ifft_pipeline,
+                [WriteDescriptorSet::buffer(0, buf.buffer.clone())],
+            );
+            self.builder
+                .bind_pipeline_compute(self.backend.ccx.ifft_pipeline.clone())
+                .unwrap()
+                .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.ifft_pipeline.layout().clone(), 0, ds)
+                .unwrap()
+                .push_constants(self.backend.ccx.ifft_pipeline.layout().clone(), 0, ifft_shader::PushConstantData { width: width as u32, height: height as u32, pass: 0 })
+                .unwrap();
+            unsafe { self.builder.dispatch([1, height as u32, 1]) }.unwrap();
+        } else {
+            self.bluestein_pass(buf.buffer.clone(), width, height, 0, 1)?;
+        }
+
+        // Column pass
+        if is_pow2(height) {
+            let ds = self.descriptor_set(
+                &self.backend.ccx.ifft_pipeline,
+                [WriteDescriptorSet::buffer(0, buf.buffer.clone())],
+            );
+            self.builder
+                .bind_pipeline_compute(self.backend.ccx.ifft_pipeline.clone())
+                .unwrap()
+                .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.ifft_pipeline.layout().clone(), 0, ds)
+                .unwrap()
+                .push_constants(self.backend.ccx.ifft_pipeline.layout().clone(), 0, ifft_shader::PushConstantData { width: width as u32, height: height as u32, pass: 1 })
+                .unwrap();
+            unsafe { self.builder.dispatch([width as u32, 1, 1]) }.unwrap();
+        } else {
+            self.bluestein_pass(buf.buffer.clone(), width, height, 1, 1)?;
+        }
+
         Ok(())
     }
 
@@ -1260,6 +1441,15 @@ mod spectral_plane_fit_partial_shader {
 }
 mod spectral_plane_fit_global_shader {
     vulkano_shaders::shader! { ty: "compute", path: "src/shaders/spectral_plane_fit_global.glsl", include: ["."], spirv_version: "1.3" }
+}
+mod bluestein_pre_shader {
+    vulkano_shaders::shader! { ty: "compute", path: "src/shaders/bluestein_pre.glsl", include: ["."], spirv_version: "1.3" }
+}
+mod bluestein_pointwise_shader {
+    vulkano_shaders::shader! { ty: "compute", path: "src/shaders/bluestein_pointwise.glsl", include: ["."], spirv_version: "1.3" }
+}
+mod bluestein_post_shader {
+    vulkano_shaders::shader! { ty: "compute", path: "src/shaders/bluestein_post.glsl", include: ["."], spirv_version: "1.3" }
 }
 
 // ---------------------------------------------------------------------------
