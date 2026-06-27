@@ -310,6 +310,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "cudarc"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38cd60a9a42ec83a2ed7effb0b1f073270264ea99da7acfc44f7e8d74dee0384"
+dependencies = [
+ "libloading",
+]
+
+[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1560,6 +1569,16 @@ dependencies = [
  "approx",
  "ndarray",
  "rustfft",
+ "vernier-core",
+]
+
+[[package]]
+name = "vernier-cuda"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "bytemuck",
+ "cudarc",
  "vernier-core",
 ]
 

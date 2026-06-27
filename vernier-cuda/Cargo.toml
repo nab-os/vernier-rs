@@ -1,0 +1,12 @@
+[package]
+name = "vernier-cuda"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vernier-core = { path = "../vernier-core" }
+cudarc = { version = "0.12", features = ["driver", "nvrtc", "cuda-12060"] }
+bytemuck = "1"
+
+[dev-dependencies]
+approx = "0.5.1"
