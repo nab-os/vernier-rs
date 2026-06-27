@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [features]
 gpu = []
+cuda = ["dep:vernier-cuda"]
 
 [dependencies]
 argh = "0.1.19"
@@ -19,4 +20,5 @@ vernier-pose = { path = "../vernier-pose" }
 vernier-patterns = { path = "../vernier-patterns" }
 image = { version = "0.25.10", features = ["jpeg", "png", "bmp", "tiff"] }
 vernier-gpu = { version = "0.1.0", path = "../vernier-gpu" }
+vernier-cuda = { path = "../vernier-cuda", optional = true }
 renderdoc = "0.12.1"

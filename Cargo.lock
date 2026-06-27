@@ -1546,6 +1546,7 @@ dependencies = [
  "renderdoc",
  "vernier-core",
  "vernier-cpu",
+ "vernier-cuda",
  "vernier-detection",
  "vernier-gpu",
  "vernier-patterns",

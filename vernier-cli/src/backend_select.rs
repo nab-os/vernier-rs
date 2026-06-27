@@ -22,6 +22,8 @@
 use vernier_core::ComputeBackend;
 use vernier_cpu::CpuBackend;
 use vernier_gpu::GpuBackend;
+#[cfg(feature = "cuda")]
+use vernier_cuda::CudaBackend;
 
 /// Which compute backend to run with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +32,8 @@ pub enum BackendKind {
     Cpu,
     /// The Vulkano GPU backend.
     Gpu,
+    /// The CUDA backend (requires `--features cuda`).
+    Cuda,
 }
 
 impl BackendKind {
@@ -38,6 +42,7 @@ impl BackendKind {
         match s.to_ascii_lowercase().as_str() {
             "cpu" => Some(Self::Cpu),
             "gpu" => Some(Self::Gpu),
+            "cuda" => Some(Self::Cuda),
             _ => None,
         }
     }
@@ -64,5 +69,9 @@ pub fn dispatch<T: BackendTask>(kind: BackendKind, task: &T) -> T::Output {
     match kind {
         BackendKind::Cpu => task.run(&CpuBackend::new()),
         BackendKind::Gpu => task.run(&GpuBackend::new()),
+        #[cfg(feature = "cuda")]
+        BackendKind::Cuda => task.run(&CudaBackend::new().expect("CUDA init failed")),
+        #[cfg(not(feature = "cuda"))]
+        BackendKind::Cuda => panic!("built without --features cuda"),
     }
 }
