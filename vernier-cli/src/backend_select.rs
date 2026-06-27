@@ -33,6 +33,7 @@ pub enum BackendKind {
     /// The Vulkano GPU backend.
     Gpu,
     /// The CUDA backend (requires `--features cuda`).
+    #[cfg(feature = "cuda")]
     Cuda,
 }
 
@@ -42,6 +43,7 @@ impl BackendKind {
         match s.to_ascii_lowercase().as_str() {
             "cpu" => Some(Self::Cpu),
             "gpu" => Some(Self::Gpu),
+            #[cfg(feature = "cuda")]
             "cuda" => Some(Self::Cuda),
             _ => None,
         }
@@ -71,7 +73,5 @@ pub fn dispatch<T: BackendTask>(kind: BackendKind, task: &T) -> T::Output {
         BackendKind::Gpu => task.run(&GpuBackend::new()),
         #[cfg(feature = "cuda")]
         BackendKind::Cuda => task.run(&CudaBackend::new().expect("CUDA init failed")),
-        #[cfg(not(feature = "cuda"))]
-        BackendKind::Cuda => panic!("built without --features cuda"),
     }
 }

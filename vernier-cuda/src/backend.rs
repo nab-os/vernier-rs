@@ -15,7 +15,7 @@ use crate::kernels::KERNEL_SRC;
 // ---------------------------------------------------------------------------
 
 type CufftHandle = u32;
-const CUFFT_C2C: i32 = 8;
+const CUFFT_C2C: i32 = 0x29; // from cufft.h: CUFFT_C2C (complex-to-complex interleaved)
 const CUFFT_FORWARD: i32 = -1;
 const CUFFT_INVERSE: i32 = 1;
 
