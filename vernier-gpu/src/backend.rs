@@ -365,7 +365,8 @@ impl ComputeBackend for GpuBackend {
                 ..Default::default()
             },
             AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST,
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS,
                 ..Default::default()
             },
             data.iter().copied(),
@@ -491,10 +492,25 @@ impl GpuJob<'_> {
         self.builder
             .bind_pipeline_compute(self.backend.ccx.bluestein_pre_pipeline.clone())
             .unwrap()
-            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.bluestein_pre_pipeline.layout().clone(), 0, ds_pre)
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.backend.ccx.bluestein_pre_pipeline.layout().clone(),
+                0,
+                ds_pre,
+            )
             .unwrap()
-            .push_constants(self.backend.ccx.bluestein_pre_pipeline.layout().clone(), 0,
-                bluestein_pre_shader::PushConstantData { N: n as u32, M: m as u32, width: width as u32, height: height as u32, pass, is_inverse })
+            .push_constants(
+                self.backend.ccx.bluestein_pre_pipeline.layout().clone(),
+                0,
+                bluestein_pre_shader::PushConstantData {
+                    N: n as u32,
+                    M: m as u32,
+                    width: width as u32,
+                    height: height as u32,
+                    pass,
+                    is_inverse,
+                },
+            )
             .unwrap();
         let pre_groups = pre_total.div_ceil(256);
         unsafe { self.builder.dispatch([pre_groups as u32, 1, 1]) }.unwrap();
@@ -514,10 +530,22 @@ impl GpuJob<'_> {
         self.builder
             .bind_pipeline_compute(self.backend.ccx.fft_pipeline.clone())
             .unwrap()
-            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.fft_pipeline.layout().clone(), 0, ds_fft_a)
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.backend.ccx.fft_pipeline.layout().clone(),
+                0,
+                ds_fft_a,
+            )
             .unwrap()
-            .push_constants(self.backend.ccx.fft_pipeline.layout().clone(), 0,
-                fft_shader::PushConstantData { width: fft_w, height: fft_h, pass: fft_pass })
+            .push_constants(
+                self.backend.ccx.fft_pipeline.layout().clone(),
+                0,
+                fft_shader::PushConstantData {
+                    width: fft_w,
+                    height: fft_h,
+                    pass: fft_pass,
+                },
+            )
             .unwrap();
         unsafe { self.builder.dispatch(fft_dispatch) }.unwrap();
 
@@ -529,10 +557,22 @@ impl GpuJob<'_> {
         self.builder
             .bind_pipeline_compute(self.backend.ccx.fft_pipeline.clone())
             .unwrap()
-            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.fft_pipeline.layout().clone(), 0, ds_fft_b)
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.backend.ccx.fft_pipeline.layout().clone(),
+                0,
+                ds_fft_b,
+            )
             .unwrap()
-            .push_constants(self.backend.ccx.fft_pipeline.layout().clone(), 0,
-                fft_shader::PushConstantData { width: m as u32, height: 1, pass: 0 })
+            .push_constants(
+                self.backend.ccx.fft_pipeline.layout().clone(),
+                0,
+                fft_shader::PushConstantData {
+                    width: m as u32,
+                    height: 1,
+                    pass: 0,
+                },
+            )
             .unwrap();
         unsafe { self.builder.dispatch([1, 1, 1]) }.unwrap();
 
@@ -550,10 +590,30 @@ impl GpuJob<'_> {
         self.builder
             .bind_pipeline_compute(self.backend.ccx.bluestein_pointwise_pipeline.clone())
             .unwrap()
-            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.bluestein_pointwise_pipeline.layout().clone(), 0, ds_pw)
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.backend
+                    .ccx
+                    .bluestein_pointwise_pipeline
+                    .layout()
+                    .clone(),
+                0,
+                ds_pw,
+            )
             .unwrap()
-            .push_constants(self.backend.ccx.bluestein_pointwise_pipeline.layout().clone(), 0,
-                bluestein_pointwise_shader::PushConstantData { n_elements: work_a_size as u32, period: pw_period, pass })
+            .push_constants(
+                self.backend
+                    .ccx
+                    .bluestein_pointwise_pipeline
+                    .layout()
+                    .clone(),
+                0,
+                bluestein_pointwise_shader::PushConstantData {
+                    n_elements: work_a_size as u32,
+                    period: pw_period,
+                    pass,
+                },
+            )
             .unwrap();
         let pw_groups = work_a_size.div_ceil(256);
         unsafe { self.builder.dispatch([pw_groups as u32, 1, 1]) }.unwrap();
@@ -567,10 +627,22 @@ impl GpuJob<'_> {
         self.builder
             .bind_pipeline_compute(self.backend.ccx.ifft_pipeline.clone())
             .unwrap()
-            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.ifft_pipeline.layout().clone(), 0, ds_ifft_a)
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.backend.ccx.ifft_pipeline.layout().clone(),
+                0,
+                ds_ifft_a,
+            )
             .unwrap()
-            .push_constants(self.backend.ccx.ifft_pipeline.layout().clone(), 0,
-                ifft_shader::PushConstantData { width: ifft_w, height: ifft_h, pass: ifft_pass })
+            .push_constants(
+                self.backend.ccx.ifft_pipeline.layout().clone(),
+                0,
+                ifft_shader::PushConstantData {
+                    width: ifft_w,
+                    height: ifft_h,
+                    pass: ifft_pass,
+                },
+            )
             .unwrap();
         unsafe { self.builder.dispatch(ifft_dispatch) }.unwrap();
 
@@ -585,10 +657,25 @@ impl GpuJob<'_> {
         self.builder
             .bind_pipeline_compute(self.backend.ccx.bluestein_post_pipeline.clone())
             .unwrap()
-            .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.bluestein_post_pipeline.layout().clone(), 0, ds_post)
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.backend.ccx.bluestein_post_pipeline.layout().clone(),
+                0,
+                ds_post,
+            )
             .unwrap()
-            .push_constants(self.backend.ccx.bluestein_post_pipeline.layout().clone(), 0,
-                bluestein_post_shader::PushConstantData { N: n as u32, M: m as u32, width: width as u32, height: height as u32, pass, is_inverse })
+            .push_constants(
+                self.backend.ccx.bluestein_post_pipeline.layout().clone(),
+                0,
+                bluestein_post_shader::PushConstantData {
+                    N: n as u32,
+                    M: m as u32,
+                    width: width as u32,
+                    height: height as u32,
+                    pass,
+                    is_inverse,
+                },
+            )
             .unwrap();
         let post_groups = (width * height).div_ceil(256);
         unsafe { self.builder.dispatch([post_groups as u32, 1, 1]) }.unwrap();
@@ -603,7 +690,10 @@ impl ComputeJob for GpuJob<'_> {
     fn copy_buffer(&mut self, src: &GpuBuffer) -> Result<GpuBuffer> {
         let destination = self.alloc_buffer(src.size());
         self.builder
-            .copy_buffer(CopyBufferInfo::buffers(src.buffer.clone(), destination.clone()))
+            .copy_buffer(CopyBufferInfo::buffers(
+                src.buffer.clone(),
+                destination.clone(),
+            ))
             .map_err(|e| VernierError::Backend(e.to_string()))?;
         Ok(GpuBuffer {
             buffer: destination,
@@ -627,9 +717,22 @@ impl ComputeJob for GpuJob<'_> {
             self.builder
                 .bind_pipeline_compute(self.backend.ccx.fft_pipeline.clone())
                 .unwrap()
-                .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.fft_pipeline.layout().clone(), 0, ds)
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Compute,
+                    self.backend.ccx.fft_pipeline.layout().clone(),
+                    0,
+                    ds,
+                )
                 .unwrap()
-                .push_constants(self.backend.ccx.fft_pipeline.layout().clone(), 0, fft_shader::PushConstantData { width: width as u32, height: height as u32, pass: 0 })
+                .push_constants(
+                    self.backend.ccx.fft_pipeline.layout().clone(),
+                    0,
+                    fft_shader::PushConstantData {
+                        width: width as u32,
+                        height: height as u32,
+                        pass: 0,
+                    },
+                )
                 .unwrap();
             unsafe { self.builder.dispatch([1, height as u32, 1]) }.unwrap();
         } else {
@@ -645,9 +748,22 @@ impl ComputeJob for GpuJob<'_> {
             self.builder
                 .bind_pipeline_compute(self.backend.ccx.fft_pipeline.clone())
                 .unwrap()
-                .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.fft_pipeline.layout().clone(), 0, ds)
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Compute,
+                    self.backend.ccx.fft_pipeline.layout().clone(),
+                    0,
+                    ds,
+                )
                 .unwrap()
-                .push_constants(self.backend.ccx.fft_pipeline.layout().clone(), 0, fft_shader::PushConstantData { width: width as u32, height: height as u32, pass: 1 })
+                .push_constants(
+                    self.backend.ccx.fft_pipeline.layout().clone(),
+                    0,
+                    fft_shader::PushConstantData {
+                        width: width as u32,
+                        height: height as u32,
+                        pass: 1,
+                    },
+                )
                 .unwrap();
             unsafe { self.builder.dispatch([width as u32, 1, 1]) }.unwrap();
         } else {
@@ -672,9 +788,22 @@ impl ComputeJob for GpuJob<'_> {
             self.builder
                 .bind_pipeline_compute(self.backend.ccx.ifft_pipeline.clone())
                 .unwrap()
-                .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.ifft_pipeline.layout().clone(), 0, ds)
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Compute,
+                    self.backend.ccx.ifft_pipeline.layout().clone(),
+                    0,
+                    ds,
+                )
                 .unwrap()
-                .push_constants(self.backend.ccx.ifft_pipeline.layout().clone(), 0, ifft_shader::PushConstantData { width: width as u32, height: height as u32, pass: 0 })
+                .push_constants(
+                    self.backend.ccx.ifft_pipeline.layout().clone(),
+                    0,
+                    ifft_shader::PushConstantData {
+                        width: width as u32,
+                        height: height as u32,
+                        pass: 0,
+                    },
+                )
                 .unwrap();
             unsafe { self.builder.dispatch([1, height as u32, 1]) }.unwrap();
         } else {
@@ -690,9 +819,22 @@ impl ComputeJob for GpuJob<'_> {
             self.builder
                 .bind_pipeline_compute(self.backend.ccx.ifft_pipeline.clone())
                 .unwrap()
-                .bind_descriptor_sets(PipelineBindPoint::Compute, self.backend.ccx.ifft_pipeline.layout().clone(), 0, ds)
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Compute,
+                    self.backend.ccx.ifft_pipeline.layout().clone(),
+                    0,
+                    ds,
+                )
                 .unwrap()
-                .push_constants(self.backend.ccx.ifft_pipeline.layout().clone(), 0, ifft_shader::PushConstantData { width: width as u32, height: height as u32, pass: 1 })
+                .push_constants(
+                    self.backend.ccx.ifft_pipeline.layout().clone(),
+                    0,
+                    ifft_shader::PushConstantData {
+                        width: width as u32,
+                        height: height as u32,
+                        pass: 1,
+                    },
+                )
                 .unwrap();
             unsafe { self.builder.dispatch([width as u32, 1, 1]) }.unwrap();
         } else {
@@ -725,13 +867,14 @@ impl ComputeJob for GpuJob<'_> {
             .push_constants(
                 self.backend.ccx.extract_phase_pipeline.layout().clone(),
                 0,
-                extract_phase_shader::PushConstantData {
-                    width,
-                    height,
-                },
+                extract_phase_shader::PushConstantData { width, height },
             )
             .unwrap();
-        unsafe { self.builder.dispatch([(width + 7) / 8, (height + 7) / 8, 1]) }.unwrap();
+        unsafe {
+            self.builder
+                .dispatch([(width + 7) / 8, (height + 7) / 8, 1])
+        }
+        .unwrap();
         Ok(GpuBuffer {
             buffer: output,
             width: buf.width,
@@ -771,7 +914,11 @@ impl ComputeJob for GpuJob<'_> {
                 },
             )
             .unwrap();
-        unsafe { self.builder.dispatch([(width + 7) / 8, (height + 7) / 8, 1]) }.unwrap();
+        unsafe {
+            self.builder
+                .dispatch([(width + 7) / 8, (height + 7) / 8, 1])
+        }
+        .unwrap();
         Ok(())
     }
 
@@ -807,7 +954,11 @@ impl ComputeJob for GpuJob<'_> {
                 },
             )
             .unwrap();
-        unsafe { self.builder.dispatch([(width + 7) / 8, (height + 7) / 8, 1]) }.unwrap();
+        unsafe {
+            self.builder
+                .dispatch([(width + 7) / 8, (height + 7) / 8, 1])
+        }
+        .unwrap();
 
         let descriptor_set_vertical = self.descriptor_set(
             &self.backend.ccx.blur_pipeline,
@@ -835,7 +986,11 @@ impl ComputeJob for GpuJob<'_> {
                 },
             )
             .unwrap();
-        unsafe { self.builder.dispatch([(width + 7) / 8, (height + 7) / 8, 1]) }.unwrap();
+        unsafe {
+            self.builder
+                .dispatch([(width + 7) / 8, (height + 7) / 8, 1])
+        }
+        .unwrap();
         Ok(())
     }
 
@@ -873,7 +1028,11 @@ impl ComputeJob for GpuJob<'_> {
                 },
             )
             .unwrap();
-        unsafe { self.builder.dispatch([(width + 7) / 8, (height + 7) / 8, 1]) }.unwrap();
+        unsafe {
+            self.builder
+                .dispatch([(width + 7) / 8, (height + 7) / 8, 1])
+        }
+        .unwrap();
         Ok(())
     }
 
@@ -913,7 +1072,11 @@ impl ComputeJob for GpuJob<'_> {
                 },
             )
             .unwrap();
-        unsafe { self.builder.dispatch([(width + 7) / 8, (height + 7) / 8, 1]) }.unwrap();
+        unsafe {
+            self.builder
+                .dispatch([(width + 7) / 8, (height + 7) / 8, 1])
+        }
+        .unwrap();
         Ok(())
     }
 
@@ -1189,7 +1352,8 @@ impl ComputeJob for GpuJob<'_> {
                 ..Default::default()
             },
             AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST,
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS,
                 ..Default::default()
             },
             data.iter().copied(),
@@ -1197,7 +1361,10 @@ impl ComputeJob for GpuJob<'_> {
         .map_err(|e| VernierError::Backend(e.to_string()))?;
         let device_buffer = self.alloc_buffer(n.next_power_of_two());
         self.builder
-            .copy_buffer(CopyBufferInfo::buffers(staging.clone(), device_buffer.clone()))
+            .copy_buffer(CopyBufferInfo::buffers(
+                staging.clone(),
+                device_buffer.clone(),
+            ))
             .map_err(|e| VernierError::Backend(e.to_string()))?;
         self.staging_buffers.push(staging);
         Ok(GpuBuffer {
