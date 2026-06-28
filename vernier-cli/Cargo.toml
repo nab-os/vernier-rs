@@ -8,7 +8,8 @@ name = "vernier"
 path = "src/main.rs"
 
 [features]
-gpu = []
+default = ["gpu"]
+gpu = ["dep:vernier-gpu", "dep:renderdoc"]
 cuda = ["dep:vernier-cuda"]
 
 [dependencies]
@@ -19,6 +20,6 @@ vernier-detection = { path = "../vernier-detection" }
 vernier-pose = { path = "../vernier-pose" }
 vernier-patterns = { path = "../vernier-patterns" }
 image = { version = "0.25.10", features = ["jpeg", "png", "bmp", "tiff"] }
-vernier-gpu = { version = "0.1.0", path = "../vernier-gpu" }
+vernier-gpu = { version = "0.1.0", path = "../vernier-gpu", optional = true }
 vernier-cuda = { path = "../vernier-cuda", optional = true }
-renderdoc = "0.12.1"
+renderdoc = { version = "0.12.1", optional = true }

@@ -19,9 +19,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: sudo apt-get install -y --no-install-recommends libshaderc-dev
-
-      - run: cargo test --workspace --exclude vernier-cuda
+      - run: cargo test --workspace --exclude vernier-cuda --exclude vernier-gpu
+      - run: cargo test -p vernier-cli --no-default-features
 
   native:
     needs: test

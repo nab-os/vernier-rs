@@ -26,7 +26,7 @@ fn main() {
     match top.command {
         Command::Bench(a) => {
             let Some(kind) = BackendKind::parse(&a.backend) else {
-                eprintln!("unknown backend '{}'. try: cpu, gpu", a.backend);
+                eprintln!("unknown backend '{}'. try: {}", a.backend, BackendKind::hint());
                 std::process::exit(2);
             };
             let task = Benchmark {
@@ -83,7 +83,7 @@ fn main() {
         }
         Command::RoundtripMegarena(a) => {
             let Some(kind) = BackendKind::parse(&a.backend) else {
-                eprintln!("unknown backend '{}'. try: cpu, gpu", a.backend);
+                eprintln!("unknown backend '{}'. try: {}", a.backend, BackendKind::hint());
                 std::process::exit(2);
             };
             let task = RoundtripMegarena {
