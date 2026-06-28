@@ -19,7 +19,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: cargo test --workspace --exclude vernier-cuda --exclude vernier-gpu
+      - run: cargo test --workspace --exclude vernier-cuda --exclude vernier-gpu --exclude vernier-cli
       - run: cargo test -p vernier-cli --no-default-features
 
   native:
