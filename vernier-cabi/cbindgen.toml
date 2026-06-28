@@ -1,0 +1,7 @@
+language = "C"
+include_guard = "VERNIER_H"
+tab_width = 4
+documentation = true
+documentation_style = "c99"
+usize_is_size_t = true
+cpp_compat = true
