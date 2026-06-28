@@ -43,7 +43,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - if: runner.os == 'Linux'
-        run: sudo apt-get install -y --no-install-recommends libshaderc-dev libxcb-dev
+        run: sudo apt-get install -y --no-install-recommends libshaderc-dev libxcb1-dev
 
       - run: cargo build -p vernier-cli -p vernier-cabi --release
 
@@ -75,7 +75,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - if: runner.os == 'Linux'
-        run: sudo apt-get install -y --no-install-recommends libshaderc-dev libxcb-dev
+        run: sudo apt-get install -y --no-install-recommends libshaderc-dev libxcb1-dev
 
       - uses: PyO3/maturin-action@v1
         with:
