@@ -592,23 +592,33 @@ pub fn extract_code(
     let take_window = |bits: &std::collections::BTreeMap<i64, u8>| -> Option<(Vec<u8>, i64)> {
         let triples: Vec<i64> = bits.keys().copied().collect();
 
+        // Collect all starts of consecutive runs of length window_size.
+        let mut candidates: Vec<i64> = Vec::new();
         for start in 0..triples.len() {
             if start + window_size > triples.len() {
                 break;
             }
-
-            let consecutive = (0..window_size).all(|j| triples[start + j] == triples[start] + j as i64);
-
-            if !consecutive {
-                continue;
+            let consecutive = (0..window_size)
+                .all(|j| triples[start + j] == triples[start] + j as i64);
+            if consecutive {
+                candidates.push(triples[start]);
             }
+        }
 
-            let window: Vec<u8> = (0..window_size).map(|j| bits[&(triples[start] + j as i64)]).collect();
+        // Prefer the window whose center (first_triple + (n-1)/2) is closest to
+        // triple 0 (the image centre). Image-edge cells are most likely to have
+        // insufficient pixels and produce bit errors that create false LFSR matches.
+        candidates.sort_by_key(|&t| {
+            // Multiply by 2 to keep integer arithmetic with half-integer centres.
+            (2 * t + window_size as i64 - 1).unsigned_abs()
+        });
 
-            // all-ones is a valid LFSR state (12-bit maximal LFSR includes it);
-            // do NOT skip it here. The widx.locate check provides all validation needed.
+        for first_triple in candidates {
+            let window: Vec<u8> =
+                (0..window_size).map(|j| bits[&(first_triple + j as i64)]).collect();
+            // all-ones is a valid LFSR state; widx.locate provides full validation.
             if widx.locate(&window).is_some() {
-                return Some((window, triples[start]));
+                return Some((window, first_triple));
             }
         }
 
