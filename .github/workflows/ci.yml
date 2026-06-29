@@ -69,7 +69,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             ARCHIVE="vernier-${VERSION}-${{ matrix.label }}.zip"
-            cd dist && zip -r "../${ARCHIVE}" . && cd ..
+            cd dist && 7z a -tzip "../${ARCHIVE}" . > /dev/null && cd ..
           else
             ARCHIVE="vernier-${VERSION}-${{ matrix.label }}.tar.gz"
             tar czf "${ARCHIVE}" -C dist .
@@ -192,7 +192,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             ARCHIVE="vernier-${VERSION}-${{ matrix.label }}-cuda.zip"
-            cd dist && zip -r "../${ARCHIVE}" . && cd ..
+            cd dist && 7z a -tzip "../${ARCHIVE}" . > /dev/null && cd ..
           else
             ARCHIVE="vernier-${VERSION}-${{ matrix.label }}-cuda.tar.gz"
             tar czf "${ARCHIVE}" -C dist .
