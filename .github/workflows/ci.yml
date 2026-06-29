@@ -124,7 +124,14 @@ jobs:
           cuda: '12.6.2'
           method: network
 
-      - run: cargo fetch --locked
+      - name: Set wheel version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i.bak "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" vernier-py/Cargo.toml
+          rm -f vernier-py/Cargo.toml.bak
+
+      - run: cargo fetch
 
       - uses: PyO3/maturin-action@v1
         with:
@@ -148,7 +155,10 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      - run: dotnet pack vernier-dotnet/Vernier.csproj -c Release -o out
+      - shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          dotnet pack vernier-dotnet/Vernier.csproj -c Release -o out -p:Version=$VERSION
 
       - uses: actions/upload-artifact@v7
         with:
