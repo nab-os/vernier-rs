@@ -13,7 +13,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -36,7 +36,7 @@ jobs:
             label: windows
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -50,6 +50,13 @@ jobs:
           brew install shaderc
           echo "SHADERC_LIB_DIR=$(brew --prefix shaderc)/lib" >> $GITHUB_ENV
 
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pip install "cmake<4"
+          $cmake = python -c "import cmake, os; print(os.path.join(cmake.CMAKE_BIN_DIR, 'cmake.exe'))"
+          "CMAKE=$cmake" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - run: cargo build -p vernier-cli -p vernier-cabi --release
 
       - name: Collect artifacts
@@ -60,7 +67,7 @@ jobs:
           cp target/release/libvernier_cabi* dist/ 2>/dev/null || true
           cp -r vernier-cabi/include dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: native-${{ matrix.label }}
           path: dist/
@@ -73,7 +80,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -87,7 +94,7 @@ jobs:
           args: --release --out dist
           manylinux: off
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: wheel-${{ matrix.os }}
           path: vernier-py/dist/
@@ -99,13 +106,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "10.0.x"
 
       - run: dotnet pack vernier-dotnet/Vernier.csproj -c Release -o out
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: nuget
           path: out/*.nupkg
@@ -117,7 +124,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: artifacts
 
