@@ -291,16 +291,28 @@ impl ComputeJob for CpuJob<'_> {
             d as Real
         };
 
+        let inv_denom = -1.0 / two_sigma_sq;
+        let gain_x: Vec<f32> = (0..width)
+            .map(|fx| {
+                let dx = circular_delta(fx, cx, width);
+                (dx * dx * inv_denom).exp() as f32
+            })
+            .collect();
+        let gain_y: Vec<f32> = (0..height)
+            .map(|fy| {
+                let dy = circular_delta(fy, cy, height);
+                (dy * dy * inv_denom).exp() as f32
+            })
+            .collect();
+
         let data = buf.as_mut_slice();
         for fy in 0..height {
-            let dy = circular_delta(fy, cy, height);
-            for fx in 0..width {
-                let dx = circular_delta(fx, cx, width);
-                let r2 = dx * dx + dy * dy;
-                let gain = (-r2 / two_sigma_sq).exp() as f32;
-                let flat_index = fy * width + fx;
-                data[flat_index].re *= gain;
-                data[flat_index].im *= gain;
+            let gy = gain_y[fy];
+            let row = &mut data[fy * width..(fy + 1) * width];
+            for (fx, v) in row.iter_mut().enumerate() {
+                let gain = gy * gain_x[fx];
+                v.re *= gain;
+                v.im *= gain;
             }
         }
         Ok(())
