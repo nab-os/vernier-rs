@@ -89,10 +89,13 @@ jobs:
         include:
           - os: ubuntu-latest
             label: linux
+            maturin_args: --release --out dist --features cuda
           - os: macos-latest
             label: macos
+            maturin_args: --release --out dist
           - os: windows-latest
             label: windows
+            maturin_args: --release --out dist --features cuda
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -101,12 +104,32 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install CUDA toolkit (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            cuda-cudart-dev-12-6 \
+            cuda-driver-dev-12-6 \
+            libcufft-dev-12-6 \
+            cuda-nvrtc-dev-12-6
+          echo "CUDA_PATH=/usr/local/cuda-12.6" >> $GITHUB_ENV
+
+      - name: Install CUDA toolkit (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: '12.6.2'
+          method: network
+
       - run: cargo fetch --locked
 
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: vernier-py
-          args: --release --out dist
+          args: ${{ matrix.maturin_args }}
           manylinux: off
 
       - uses: actions/upload-artifact@v7
