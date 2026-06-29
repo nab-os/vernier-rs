@@ -160,10 +160,24 @@ jobs:
           $cmake = python -c "import cmake, os; print(os.path.join(cmake.CMAKE_BIN_DIR, 'cmake.exe'))"
           "CMAKE=$cmake" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Install CUDA toolkit
-        uses: Jimver/cuda-toolkit@v0.2.15
+      - name: Install CUDA toolkit (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            cuda-cudart-dev-12-6 \
+            cuda-driver-dev-12-6 \
+            libcufft-dev-12-6 \
+            cuda-nvrtc-dev-12-6
+          echo "CUDA_PATH=/usr/local/cuda-12.6" >> $GITHUB_ENV
+
+      - name: Install CUDA toolkit (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.19
         with:
-          cuda: '12.6.0'
+          cuda: '12.6.2'
           method: network
 
       - run: cargo build -p vernier-cli -p vernier-cabi --features cuda --release
