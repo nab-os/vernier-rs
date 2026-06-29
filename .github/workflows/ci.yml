@@ -175,7 +175,7 @@ jobs:
 
       - name: Install CUDA toolkit (Windows)
         if: runner.os == 'Windows'
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: '12.6.2'
           method: network
