@@ -4,7 +4,7 @@ detect.py — vernier-py quick-start example.
 Loads the reference 9 µm / 12-bit Megarena image and runs both periodic
 and absolute detection.  Expected output (matches vernier-cli):
 
-    megarena  x=-4452.12  y=-26759.51  theta=1.429510
+    megarena  x=-34827.3  y=-26759.51  theta=1.429510
 
 Usage
 -----
@@ -55,7 +55,7 @@ def main() -> None:
         min_frequency=20, max_frequency=500
     )
     print(f"megarena  x={pose.x:.2f}  y={pose.y:.2f}  theta={pose.theta:.6f}")
-    print(f"expected  x≈-4452      y≈-26759  (matches vernier-cli)")
+    print("expected  x≈-34827.3      y≈-26759  (matches vernier-cli)")
 
     # ── CUDA (graceful fallback) ──────────────────────────────────────────────
     try:
