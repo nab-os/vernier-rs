@@ -2,3 +2,8 @@
 resolver = "3"
 members = ["vernier-cabi", "vernier-cli", "vernier-core", "vernier-cpu", "vernier-cuda", "vernier-detection", "vernier-gpu", "vernier-patterns", "vernier-pose", "vernier-py"]
 
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
