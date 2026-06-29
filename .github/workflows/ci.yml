@@ -43,7 +43,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - if: runner.os == 'Linux'
-        run: sudo apt-get install -y --no-install-recommends libshaderc-dev libxcb1-dev
+        run: sudo apt-get install -y --no-install-recommends libxcb1-dev
 
       - if: runner.os == 'macOS'
         run: |
