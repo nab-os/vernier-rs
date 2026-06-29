@@ -1853,6 +1853,7 @@ name = "vernier-gpu"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "shaderc",
  "smallvec",
  "vernier-core",
  "vulkano",

@@ -10,3 +10,4 @@ vernier-core = { path = "../vernier-core" }
 vulkano = "0.35.2"
 vulkano-macros = "0.35.0"
 vulkano-shaders = "0.35.0"
+shaderc = { version = "0.8", features = ["prefer-static-linking"] }
