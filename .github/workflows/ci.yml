@@ -132,8 +132,66 @@ jobs:
           name: nuget
           path: out/*.nupkg
 
+  native-cuda:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux
+          - os: windows-latest
+            label: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends libxcb1-dev
+
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pip install "cmake<4"
+          $cmake = python -c "import cmake, os; print(os.path.join(cmake.CMAKE_BIN_DIR, 'cmake.exe'))"
+          "CMAKE=$cmake" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.15
+        with:
+          cuda: '12.6.0'
+          method: network
+
+      - run: cargo build -p vernier-cli -p vernier-cabi --features cuda --release
+
+      - name: Collect and archive artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/vernier* dist/ 2>/dev/null || true
+          cp target/release/libvernier_cabi* dist/ 2>/dev/null || true
+          cp -r vernier-cabi/include dist/
+          VERSION="${GITHUB_REF_NAME}"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ARCHIVE="vernier-${VERSION}-${{ matrix.label }}-cuda.zip"
+            cd dist && zip -r "../${ARCHIVE}" . && cd ..
+          else
+            ARCHIVE="vernier-${VERSION}-${{ matrix.label }}-cuda.tar.gz"
+            tar czf "${ARCHIVE}" -C dist .
+          fi
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.label }}-cuda
+          path: ${{ env.ARCHIVE }}
+
   release:
-    needs: [native, python, dotnet]
+    needs: [native, native-cuda, python, dotnet]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
