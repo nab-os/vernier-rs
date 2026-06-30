@@ -129,7 +129,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           sed -i.bak "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" vernier-py/Cargo.toml
-          rm -f vernier-py/Cargo.toml.bak
+          sed -i.bak "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" vernier-py/pyproject.toml
+          rm -f vernier-py/Cargo.toml.bak vernier-py/pyproject.toml.bak
 
       - run: cargo fetch
 
