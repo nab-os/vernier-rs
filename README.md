@@ -80,12 +80,14 @@ The Python extension is built with [maturin](https://github.com/PyO3/maturin).
 ```bash
 pip install maturin
 
-# Build a wheel and install it into the active Python environment
-maturin develop -p vernier-py --release
+# Build a wheel, then install it
+cd vernier-py
+maturin build --release
+pip install ../target/wheels/vernier_py-*.whl
+cd ..
 
-# Or build a wheel file to distribute
-maturin build  -p vernier-py --release
-pip install target/wheels/vernier_py-*.whl
+# Inside an active virtualenv you can also use the faster dev-install:
+# maturin develop --release
 ```
 
 ```python
