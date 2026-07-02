@@ -1,0 +1,12 @@
+[package]
+name = "vernier-detector"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vernier-core = { path = "../vernier-core" }
+vernier-spectral = { path = "../vernier-spectral" }
+vernier-pose = { path = "../vernier-pose" }
+vernier-cpu = { path = "../vernier-cpu" }
+vernier-patterns = { path = "../vernier-patterns" }
+serde_json = "1.0"
