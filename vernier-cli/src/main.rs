@@ -108,20 +108,24 @@ fn main() {
                 r.backend, r.renderer, a.width, a.height, a.period, a.code_size, swap_label
             );
             println!(
-                "true:      x={:.4}  y={:.4}  θ={:.6} rad",
+                "true:      x={:.4}px  y={:.4}px  θ={:.6} rad",
                 r.true_x, r.true_y, r.true_theta
             );
             println!(
-                "recovered: x={:.4}  y={:.4}  θ={:.6} rad",
+                "recovered: x={:.4}px  y={:.4}px  θ={:.6} rad",
                 r.recovered_x, r.recovered_y, r.recovered_theta
             );
             println!(
                 "error abs: Δx={:.4}px  Δy={:.4}px  Δθ={:.2e} rad",
                 r.abs_error_x, r.abs_error_y, r.error_theta
             );
+            // Sub-period precision margin, reported in nanometres via the camera
+            // pixel size (µm/pixel × 1000 = nm/pixel).
+            let nm_per_px = a.pixel_size * 1000.0;
             println!(
-                "error fine: Δx={:.4}px  Δy={:.4}px",
-                r.fine_error_x, r.fine_error_y
+                "error fine: Δx={:.1}nm  Δy={:.1}nm",
+                r.fine_error_x * nm_per_px,
+                r.fine_error_y * nm_per_px
             );
         }
     }
