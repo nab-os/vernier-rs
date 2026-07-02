@@ -43,6 +43,11 @@ pub struct Megarena {
     pub order: u32,
     /// The absolute code sequence (shared along both axes).
     code: Lfsr,
+    /// LFSR index of the bit that sits at triple 0 (image centre for pose=0).
+    /// Shifting this away from 0 ensures the decode window never straddles the
+    /// sequence boundary, which would cause `widx.locate` to return a position
+    /// near `len` and inflate the recovered periodshift by ~3×len periods.
+    lfsr_offset: i64,
 }
 
 impl Megarena {
@@ -55,7 +60,19 @@ impl Megarena {
             period_px,
             order,
             code,
+            lfsr_offset: 0,
         })
+    }
+
+    /// Sets the LFSR index that is placed at triple 0 (image centre for pose=0).
+    ///
+    /// Use this to avoid the sequence-boundary wrap when the decode window would
+    /// otherwise straddle position 0 in the LFSR.  A value of `order as i64`
+    /// guarantees the decode window stays well clear of the boundary for small
+    /// pixel offsets, so the roundtrip produces sub-period errors.
+    pub fn with_lfsr_offset(mut self, offset: i64) -> Self {
+        self.lfsr_offset = offset;
+        self
     }
 
     /// Decides whether the period at integer index `p` along an axis is present.
@@ -66,17 +83,69 @@ impl Megarena {
     ///
     /// The triple index `p / 3` selects the code bit via the LFSR.
     fn period_present(&self, p: i64) -> bool {
-        // Map possibly-negative period index into a non-negative phase for
-        // grouping and code lookup. The pattern is conceptually infinite; we
-        // tile the finite LFSR sequence across it.
         let triple = p.div_euclid(3);
         let within = p.rem_euclid(3); // 0, 1, or 2
         if within != 1 {
             return true; // outer periods always present
         }
         // Central period: present iff this triple's code bit is 1.
-        let k = triple.rem_euclid(self.code.len() as i64) as usize;
+        // lfsr_offset shifts which bit sits at triple 0.
+        let k = (triple + self.lfsr_offset).rem_euclid(self.code.len() as i64) as usize;
         self.code.bit_at(k) == 1
+    }
+
+    /// Renders the megarena pattern on the GPU at `pose` into a `width × height` image.
+    ///
+    /// Requires the `vulkan` feature.  Only period cells that are active
+    /// (present in the LFSR sequence and not the corner-removal cell) are
+    /// submitted as draw instances; absent cells produce no geometry, so the
+    /// rasteriser naturally leaves them dark.
+    #[cfg(feature = "vulkan")]
+    pub fn render_gpu(
+        &self,
+        renderer: &vernier_render::PatternRenderer,
+        camera: &vernier_render::CameraModel,
+        width: usize,
+        height: usize,
+        pose: &PatternPose,
+    ) -> vernier_core::GrayImage {
+        let period_um = self.period_px as f32 * camera.pixel_size;
+        let pose_x_um = pose.x as f32 * camera.pixel_size;
+        let pose_y_um = pose.y as f32 * camera.pixel_size;
+
+        let half_diag_um =
+            ((width * width + height * height) as f32).sqrt() * 0.5 * camera.pixel_size
+                + period_um;
+
+        let col_min = ((pose_x_um - half_diag_um) / period_um).floor() as i64;
+        let col_max = ((pose_x_um + half_diag_um) / period_um).ceil() as i64;
+        let row_min = ((pose_y_um - half_diag_um) / period_um).floor() as i64;
+        let row_max = ((pose_y_um + half_diag_um) / period_um).ceil() as i64;
+
+        let mut cell_origins = Vec::new();
+        for col in col_min..=col_max {
+            for row in row_min..=row_max {
+                if self.period_present(col)
+                    && self.period_present(row)
+                    && !(col.rem_euclid(3) == 0 && row.rem_euclid(3) == 0)
+                {
+                    cell_origins.push([col as f32 * period_um, row as f32 * period_um]);
+                }
+            }
+        }
+
+        renderer.render_quads(
+            &cell_origins,
+            &vernier_render::RenderParams {
+                width,
+                height,
+                period_um,
+                pixel_size: camera.pixel_size,
+                pose_x_um,
+                pose_y_um,
+                alpha: pose.theta as f32,
+            },
+        )
     }
 
     /// Renders the megarena pattern at `pose` into a `width × height` image.

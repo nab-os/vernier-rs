@@ -1865,6 +1865,7 @@ name = "vernier-patterns"
 version = "0.1.0"
 dependencies = [
  "vernier-core",
+ "vernier-render",
 ]
 
 [[package]]
@@ -1889,6 +1890,19 @@ dependencies = [
  "vernier-cuda",
  "vernier-detection",
  "vernier-pose",
+]
+
+[[package]]
+name = "vernier-render"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "smallvec",
+ "vernier-core",
+ "vernier-patterns",
+ "vulkano",
+ "vulkano-macros",
+ "vulkano-shaders",
 ]
 
 [[package]]

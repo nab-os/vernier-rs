@@ -98,12 +98,14 @@ fn main() {
                 min_frequency: a.min_frequency,
                 max_frequency: a.max_frequency,
                 smoothing_sigma: a.smoothing_sigma as f32,
+                render_gpu: a.render_gpu,
+                pixel_size: a.pixel_size as f32,
             };
             let r = dispatch(kind, &task);
             let swap_label = if r.swapped { "yes" } else { "no" };
             println!(
-                "backend={}  size={}x{}  period={:.1}px  code={}  swapped={}",
-                r.backend, a.width, a.height, a.period, a.code_size, swap_label
+                "backend={}  renderer={}  size={}x{}  period={:.1}px  code={}  swapped={}",
+                r.backend, r.renderer, a.width, a.height, a.period, a.code_size, swap_label
             );
             println!(
                 "true:      x={:.4}  y={:.4}  θ={:.6} rad",

@@ -33,6 +33,59 @@ impl Periodic {
         Self { period_px }
     }
 
+    /// Renders this pattern on the GPU at `pose` into a `width × height` image.
+    ///
+    /// Requires the `vulkan` feature.  Uses Vulkan rasterisation through
+    /// `vernier-render`, evaluating the 2D cosine-carrier formula
+    /// `(1+cos_x)(1+cos_y)/4` in the fragment shader — the same formula as
+    /// the C++ reference `getIntensity`.
+    ///
+    /// The `camera` model supplies the physical `pixel_size` (µm/pixel) used
+    /// to convert pixel-unit pose fields into µm for the renderer.
+    #[cfg(feature = "vulkan")]
+    pub fn render_gpu(
+        &self,
+        renderer: &vernier_render::PatternRenderer,
+        camera: &vernier_render::CameraModel,
+        width: usize,
+        height: usize,
+        pose: &PatternPose,
+    ) -> GrayImage {
+        let period_um = self.period_px as f32 * camera.pixel_size;
+        let pose_x_um = pose.x as f32 * camera.pixel_size;
+        let pose_y_um = pose.y as f32 * camera.pixel_size;
+
+        // Conservative bounding box of the visible area in period-cell units.
+        // The half-diagonal (in µm) covers any rotation.
+        let half_diag_um =
+            ((width * width + height * height) as f32).sqrt() * 0.5 * camera.pixel_size + period_um;
+
+        let col_min = ((pose_x_um - half_diag_um) / period_um).floor() as i64;
+        let col_max = ((pose_x_um + half_diag_um) / period_um).ceil() as i64;
+        let row_min = ((pose_y_um - half_diag_um) / period_um).floor() as i64;
+        let row_max = ((pose_y_um + half_diag_um) / period_um).ceil() as i64;
+
+        let mut cell_origins = Vec::new();
+        for col in col_min..=col_max {
+            for row in row_min..=row_max {
+                cell_origins.push([col as f32 * period_um, row as f32 * period_um]);
+            }
+        }
+
+        renderer.render_quads(
+            &cell_origins,
+            &vernier_render::RenderParams {
+                width,
+                height,
+                period_um,
+                pixel_size: camera.pixel_size,
+                pose_x_um,
+                pose_y_um,
+                alpha: pose.theta as f32,
+            },
+        )
+    }
+
     /// Renders this pattern at `pose` into a `width x height` image.
     ///
     /// The pattern stripes run perpendicular to the pattern-frame X axis, so the

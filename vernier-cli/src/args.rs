@@ -187,4 +187,12 @@ pub struct RoundtripMegarenaArgs {
     /// gaussian blur sigma applied to magnitude before peak search (default: 0.5)
     #[argh(option, default = "0.5")]
     pub smoothing_sigma: f64,
+
+    /// render the pattern on the GPU via Vulkan instead of the CPU path (requires --features vulkan)
+    #[argh(switch)]
+    pub render_gpu: bool,
+
+    /// camera pixel size in µm/pixel, used when --render-gpu is set (default: 1.0)
+    #[argh(option, default = "1.0")]
+    pub pixel_size: f64,
 }

@@ -22,10 +22,15 @@ pub struct RoundtripMegarena {
     pub min_frequency: usize,
     pub max_frequency: usize,
     pub smoothing_sigma: f32,
+    /// Use the Vulkan GPU renderer instead of the CPU path.
+    pub render_gpu: bool,
+    /// Camera pixel size in µm/pixel (only used when render_gpu is true).
+    pub pixel_size: f32,
 }
 
 pub struct RoundtripMegarenaReport {
     pub backend: String,
+    pub renderer: String,
     /// Full absolute position that was rendered.
     pub true_x: f64,
     pub true_y: f64,
@@ -55,11 +60,34 @@ impl BackendTask for RoundtripMegarena {
     type Output = RoundtripMegarenaReport;
 
     fn run<B: ComputeBackend>(&self, backend: &B) -> RoundtripMegarenaReport {
+        // Offset the LFSR so that the decode window at the image centre (triple 0
+        // for pose=0) reads bits [lfsr_offset .. lfsr_offset+code_size), well away
+        // from the sequence boundary.  Without this, the window straddles position 0
+        // and `widx.locate` returns ~len, inflating the recovered periodshift by
+        // ~3×len periods.
+        let lfsr_offset = self.code_size as i64;
         let pattern = Megarena::new(self.period_px as Real, self.code_size)
-            .unwrap_or_else(|| panic!("unsupported code size {}", self.code_size));
+            .unwrap_or_else(|| panic!("unsupported code size {}", self.code_size))
+            .with_lfsr_offset(lfsr_offset);
 
         let pose = PatternPose::new(self.true_x as Real, self.true_y as Real, self.true_theta as Real);
-        let image = pattern.render(self.width, self.height, &pose);
+        let (image, renderer_name) = if self.render_gpu {
+            #[cfg(feature = "vulkan")]
+            {
+                use vernier_patterns::{CameraModel, PatternRenderer};
+                let vk_renderer = PatternRenderer::new();
+                let camera = CameraModel { pixel_size: self.pixel_size };
+                let img = pattern.render_gpu(&vk_renderer, &camera, self.width, self.height, &pose);
+                (img, "gpu-vulkan-raster")
+            }
+            #[cfg(not(feature = "vulkan"))]
+            {
+                eprintln!("--render-gpu requires the 'vulkan' feature (build with --features vulkan)");
+                std::process::exit(1);
+            }
+        } else {
+            (pattern.render(self.width, self.height, &pose), "cpu-analytic")
+        };
 
         let layout = BufferLayout::packed(self.width, self.height);
         let complex: Vec<Complex32> =
@@ -111,8 +139,15 @@ impl BackendTask for RoundtripMegarena {
         let recovered_x = -(period * (flip_c(x_c, x_msb) / TAU + x_ps as Real));
         let recovered_y = -(period * (flip_c(y_c, y_msb) / TAU + y_ps as Real));
 
-        let abs_error_x = (recovered_x - self.true_x as Real).abs() as f64;
-        let abs_error_y = (recovered_y - self.true_y as Real).abs() as f64;
+        // Ground truth for the absolute position (LFSR frame).  With lfsr_offset=O
+        // and coding=1 (theta=0), k_t0=O, so periodshift = 3*O + 3*(n-1).
+        // recovered_x should equal true_x − period × periodshift.
+        let ps_baseline = 3 * lfsr_offset + 3 * (self.code_size as i64 - 1);
+        let expected_abs_x = self.true_x as Real - period * ps_baseline as Real;
+        let expected_abs_y = self.true_y as Real - period * ps_baseline as Real;
+
+        let abs_error_x = (recovered_x - expected_abs_x).abs() as f64;
+        let abs_error_y = (recovered_y - expected_abs_y).abs() as f64;
 
         // Fine error in the carrier (formula) frame: compares the detected carrier
         // phase against the expected phase from the true position. Uses fract() so
@@ -147,8 +182,9 @@ impl BackendTask for RoundtripMegarena {
 
         RoundtripMegarenaReport {
             backend: backend.name().to_string(),
-            true_x: self.true_x as f64,
-            true_y: self.true_y as f64,
+            renderer: renderer_name.to_string(),
+            true_x: expected_abs_x as f64,
+            true_y: expected_abs_y as f64,
             true_theta,
             recovered_x: recovered_x as f64,
             recovered_y: recovered_y as f64,

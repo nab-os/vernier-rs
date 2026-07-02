@@ -173,6 +173,12 @@ impl CellPools {
 /// Thresholds match C++: white within Chebyshev radius 0.125 of cell center
 /// (C++ `|fmod(phase,2π)| ≤ π/4` AND both axes), background beyond radius
 /// 0.375 (C++ `|fmod(phase,2π)| ≥ 3π/4` OR either axis).
+///
+/// Deviation from C++: the white pool additionally requires `floor == round`
+/// (see the inline note) so an absent period reads dark independent of the
+/// sub-period pose. Without it, decoding fails whenever the carrier phase at the
+/// image centre is near zero (pose ≈ ±¼..½ period), where the dot-centred window
+/// straddles the neighbouring period's presence gate.
 fn accumulate_cell_pools(
     phase_x: &[Real],
     phase_y: &[Real],
@@ -200,7 +206,21 @@ fn accumulate_cell_pools(
             let ry = (fy - cell_y).abs();
             let cell = (cell_x as i64, cell_y as i64);
             let value = intensity[flat_index];
-            if rx < white_r && ry < white_r {
+            // Period-consistent white pool: the carrier dot for period p sits at
+            // the integer phase ux=p, which is the *boundary* between period p−1
+            // (gate `floor(ux)=p−1`) and period p (gate `floor(ux)=p`). A window
+            // centred on the dot (`round`) therefore straddles two periods'
+            // presence gates, so an absent coding period still collects bright
+            // pixels bleeding in from its always-present outer neighbour. The
+            // fraction that bleeds in shifts with the sub-period pose, which at
+            // half-period offsets pushes absent cells across the bit-decision
+            // threshold and mislabels the coding residue. Restricting the pool to
+            // pixels whose own period matches the dot (`floor == round`) keeps
+            // only the half gated by period p, so an absent period reads dark
+            // regardless of pose.
+            let period_consistent =
+                fx.floor() as i64 == cell_x as i64 && fy.floor() as i64 == cell_y as i64;
+            if rx < white_r && ry < white_r && period_consistent {
                 let entry = white.entry(cell).or_insert((0.0, 0));
                 entry.0 += value;
                 entry.1 += 1;

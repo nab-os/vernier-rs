@@ -30,6 +30,9 @@ pub mod qrcode;
 pub mod render;
 pub mod stamp;
 
+#[cfg(feature = "vulkan")]
+pub use vernier_render::{CameraModel, PatternRenderer, RenderParams};
+
 use vernier_core::Real;
 
 /// The pose at which to *render* a pattern — the ground truth a detector should

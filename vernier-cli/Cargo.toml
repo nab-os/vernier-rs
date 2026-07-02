@@ -11,6 +11,7 @@ path = "src/main.rs"
 default = ["gpu"]
 gpu = ["dep:vernier-gpu"]
 cuda = ["dep:vernier-cuda"]
+vulkan = ["vernier-patterns/vulkan"]
 
 [dependencies]
 argh = "0.1.19"
