@@ -1,0 +1,257 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: sudo apt-get install -y --no-install-recommends libxcb1-dev
+
+      - run: cargo test --workspace --exclude vernier-cuda --exclude vernier-gpu --exclude vernier-cli
+      - run: cargo test -p vernier-cli --no-default-features
+
+  native:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux
+          - os: macos-latest
+            label: macos
+          - os: windows-latest
+            label: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends libxcb1-dev
+
+      - if: runner.os == 'macOS'
+        run: |
+          brew install shaderc
+          echo "SHADERC_LIB_DIR=$(brew --prefix shaderc)/lib" >> $GITHUB_ENV
+
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pip install "cmake<4"
+          $cmake = python -c "import cmake, os; print(os.path.join(cmake.CMAKE_BIN_DIR, 'cmake.exe'))"
+          "CMAKE=$cmake" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - run: cargo build -p vernier-cli -p vernier-cabi --release
+
+      - name: Collect and archive artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/vernier* dist/ 2>/dev/null || true
+          cp target/release/libvernier_cabi* dist/ 2>/dev/null || true
+          cp -r vernier-cabi/include dist/
+          VERSION="${GITHUB_REF_NAME}"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ARCHIVE="vernier-${VERSION}-${{ matrix.label }}.zip"
+            cd dist && 7z a -tzip "../${ARCHIVE}" . > /dev/null && cd ..
+          else
+            ARCHIVE="vernier-${VERSION}-${{ matrix.label }}.tar.gz"
+            tar czf "${ARCHIVE}" -C dist .
+          fi
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.label }}
+          path: ${{ env.ARCHIVE }}
+
+  python:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux
+            maturin_args: --release --out dist --features cuda
+          - os: macos-latest
+            label: macos
+            maturin_args: --release --out dist
+          - os: windows-latest
+            label: windows
+            maturin_args: --release --out dist --features cuda
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install CUDA toolkit (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            cuda-cudart-dev-12-6 \
+            cuda-driver-dev-12-6 \
+            libcufft-dev-12-6 \
+            cuda-nvrtc-dev-12-6
+          echo "CUDA_PATH=/usr/local/cuda-12.6" >> $GITHUB_ENV
+
+      - name: Install CUDA toolkit (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: '12.6.2'
+          method: network
+
+      - name: Set wheel version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i.bak "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" vernier-py/Cargo.toml
+          sed -i.bak "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" vernier-py/pyproject.toml
+          rm -f vernier-py/Cargo.toml.bak vernier-py/pyproject.toml.bak
+
+      - run: cargo fetch
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: vernier-py
+          args: ${{ matrix.maturin_args }}
+          manylinux: off
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.label }}
+          path: vernier-py/dist/
+
+  dotnet:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          dotnet pack vernier-dotnet/Vernier.csproj -c Release -o out -p:Version=$VERSION
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nuget
+          path: out/*.nupkg
+
+  native-cuda:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux
+          - os: windows-latest
+            label: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends libxcb1-dev
+
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pip install "cmake<4"
+          $cmake = python -c "import cmake, os; print(os.path.join(cmake.CMAKE_BIN_DIR, 'cmake.exe'))"
+          "CMAKE=$cmake" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install CUDA toolkit (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            cuda-cudart-dev-12-6 \
+            cuda-driver-dev-12-6 \
+            libcufft-dev-12-6 \
+            cuda-nvrtc-dev-12-6
+          echo "CUDA_PATH=/usr/local/cuda-12.6" >> $GITHUB_ENV
+
+      - name: Install CUDA toolkit (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: '12.6.2'
+          method: network
+
+      - run: cargo build -p vernier-cli -p vernier-cabi --features cuda --release
+
+      - name: Collect and archive artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/vernier* dist/ 2>/dev/null || true
+          cp target/release/libvernier_cabi* dist/ 2>/dev/null || true
+          cp -r vernier-cabi/include dist/
+          VERSION="${GITHUB_REF_NAME}"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ARCHIVE="vernier-${VERSION}-${{ matrix.label }}-cuda.zip"
+            cd dist && 7z a -tzip "../${ARCHIVE}" . > /dev/null && cd ..
+          else
+            ARCHIVE="vernier-${VERSION}-${{ matrix.label }}-cuda.tar.gz"
+            tar czf "${ARCHIVE}" -C dist .
+          fi
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.label }}-cuda
+          path: ${{ env.ARCHIVE }}
+
+  release:
+    needs: [native, native-cuda, python, dotnet]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
