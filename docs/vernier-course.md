@@ -57,7 +57,7 @@ nanometre-scale position measurement.
 
 The output of the whole system is a **Pose**: where the camera is relative to
 the pattern, and how it is rotated. Here is that type — the thing every chapter
-is building toward (`vernier-core/src/pose.rs:12`):
+is building toward (`vernier-core/src/pose.rs:13`):
 
 ```rust
 pub struct Pose {
@@ -247,7 +247,7 @@ whose:
 That phase is the treasure. It's what will eventually give sub-pixel position.
 
 **The code.** Running the transform is a one-liner in the spectral crate
-(`vernier-spectral/src/spectrum.rs:23`):
+(`vernier-spectral/src/spectrum.rs:29`):
 
 ```rust
 pub fn forward<B: ComputeBackend>(backend: &B, buffer: &mut B::Buffer2D) -> Result<()> {
@@ -273,7 +273,7 @@ fn fft2d(&mut self, buf: &mut CpuBuffer) -> Result<()> {
 
 One useful sanity fact, straight from the tests: FFT followed by inverse-FFT
 gives you back exactly what you started with (`fft_then_ifft_is_identity`,
-`vernier-cpu/src/backend.rs:566`). The transform loses nothing — it's just a
+`vernier-cpu/src/backend.rs:524`). The transform loses nothing — it's just a
 different way of looking at the same data. We'll use that "inverse" direction in
 Chapter 8.
 
@@ -418,7 +418,7 @@ The `circular_delta` helper handles the fact that the spectrum wraps around at
 the edges (frequency 0 and the maximum frequency are neighbours).
 
 In the orchestration code, this is done twice — once per direction — starting
-from two copies of the same spectrum (`vernier-spectral/src/spectrum.rs:139`):
+from two copies of the same spectrum (`vernier-spectral/src/spectrum.rs:109`):
 
 ```rust
 let mut spec1 = job.copy_buffer(&buffer)?;
@@ -455,19 +455,19 @@ can be measured to a tiny fraction of a cycle, which is why the method reaches
 sub-pixel precision.
 
 Getting the phase out of a pixel is just the angle of its complex number
-(`arg`). You can see it done directly when the pipeline needs the raw phase map
-(`vernier-spectral/src/spectrum.rs:164`):
+(`arg`). You can see it done directly in the `unwrap_and_fit` helper, where the
+pipeline needs the raw phase map (`vernier-spectral/src/spectrum.rs:80`):
 
 ```rust
-// Measured phase = arg of the band-passed IFFT, then unwrapped.
-let wrapped1: Vec<Real> = backend.download(&spec1)?.iter().map(|c| c.arg()).collect();
+// Per-pixel arg of the band-passed IFFT — the raw, still-wrapped phase.
+let mut phase: Vec<Real> = backend.download(spec)?.iter().map(|c| c.arg()).collect();
 ```
 
 `c.arg()` is "the angle of this complex number." One per pixel gives a whole map
 of phases: at every point in the image, how far through the wave cycle we are.
 
-There's a wrinkle in that variable name — `wrapped`. That's the subject of the
-next chapter.
+That map is still *wrapped* — the very next line of `unwrap_and_fit` calls
+`quarters_unwrap_phase` on it. That's the subject of the next chapter.
 
 ---
 
@@ -592,7 +592,7 @@ entire output of all the spectral work so far.
 the plane pass as close as possible to all the measured phases, with the total
 squared error as small as possible. It boils down to accumulating some running
 sums over every pixel and solving a tiny 3×3 system of equations
-(`vernier-spectral/src/planefit.rs:124`):
+(`vernier-spectral/src/planefit.rs:127`):
 
 ```rust
 for r in row_off..(height - row_off) {
@@ -622,13 +622,18 @@ image (the `crop_factor`, default 0.5, keeps the central half). Edges get
 distorted by the band-pass filtering, so trusting only the clean middle gives a
 better answer.
 
-> **Note on the "two ways" in the codebase.** There are actually two routes to
-> the plane. The general one (`fit_plane`) unwraps and does the least-squares fit
-> just described. The optimised one used in the hot path
-> (`spectral_plane_fit_two`, `vernier-cpu/src/backend.rs:448`) computes `a` and
-> `b` directly from the peak's position in the spectrum and `c` from a
-> weighted average, skipping the explicit unwrap. Both produce the same
-> `PhasePlane`. Wherever this course says "the plane", that's the struct above.
+> **Note on the "two ways" in the codebase.** There are two routes to the plane.
+> The one the detection path actually uses (`analyze_two` → `unwrap_and_fit` →
+> `fit_plane_to_unwrapped`, `vernier-spectral/src/planefit.rs:104`) is exactly
+> the unwrap-then-least-squares fit just described. Its running sums are
+> accumulated in `f64` (see the comment at `planefit.rs:121`): `sii` reaches
+> ~1e9 on a 512² crop, well past `f32`'s 24-bit precision, so the fit would drift
+> if it stayed in `f32`. The alternative (`spectral_plane_fit_two`,
+> `vernier-cpu/src/backend.rs:405`, used by the single-direction helper
+> `analyze_direction`) computes `a` and `b` directly from the peak's position in
+> the spectrum and `c` from a weighted average, skipping the explicit unwrap.
+> Both produce the same `PhasePlane`. Wherever this course says "the plane",
+> that's the struct above.
 
 Each direction gets its own plane. So after this chapter we hold **two
 `PhasePlane`s**, `plane1` and `plane2`, one per pattern direction. That's
@@ -775,7 +780,7 @@ axis using present/absent dots. Order `n = 12` (the default) gives a ribbon of
 
 **Generating the ribbon.** An LFSR (Linear-Feedback Shift Register) is a tiny
 machine that produces the sequence one bit at a time by shifting and XOR-ing
-(`vernier-patterns/src/lfsr.rs:24`):
+(`vernier-patterns/src/lfsr.rs:36`):
 
 ```rust
 let mut code = code_count; // start from the all-ones state
@@ -793,7 +798,7 @@ up in it.
 
 **Looking up a position.** Given `n` bits we read from the image, finding their
 position is a dictionary lookup. The code pre-builds a map from "n-bit window" →
-"position", so each lookup is instant (`vernier-patterns/src/lfsr.rs:127`):
+"position", so each lookup is instant (`vernier-patterns/src/lfsr.rs:115`):
 
 ```rust
 pub fn locate(&self, window: &[u8]) -> Option<usize> {
@@ -950,7 +955,7 @@ pub fn solve_megarena(
 }
 ```
 
-The three ways it can fail (`MegarenaError`, `vernier-pose/src/absolute.rs:672`)
+The three ways it can fail (`MegarenaError`, `vernier-pose/src/absolute.rs:673`)
 are all "couldn't read the code," never "produced a wrong number": the code
 region was unreadable, the code size isn't supported, or the decoded bits didn't
 localise in the ribbon.
@@ -980,9 +985,9 @@ fn compute(&mut self, image: &GrayImage) -> Result<()> {
 
 Two calls: `run_detection` (Chapters 5–10) and `solve_megarena` (Chapters 13–16).
 
-**The spectral half.** `run_detection` forwards to `analyze_two`, whose inner
-worker `analyze_two_impl` is the clearest single view of the spectral pipeline
-(`vernier-spectral/src/spectrum.rs:132`):
+**The spectral half.** `run_detection` forwards to `analyze_two`, whose job
+block is the clearest single view of the spectral pipeline
+(`vernier-spectral/src/spectrum.rs:91`):
 
 ```rust
 let mut job = backend.begin()?;
@@ -996,9 +1001,10 @@ job.bandpass_from_peaks(&mut spec1, &peaks_buffer, 0, sigma)?;   // Ch.7  isolat
 job.bandpass_from_peaks(&mut spec2, &peaks_buffer, 1, sigma)?;   // Ch.7  isolate dir 2
 job.ifft2d(&mut spec1)?;                             // Ch.8  back to space (phase)
 job.ifft2d(&mut spec2)?;
-let plane_fit1 = job.plane_fit_from_ifft(&spec1, 0.5)?;   // Ch.9-10  unwrap + fit plane
-let plane_fit2 = job.plane_fit_from_ifft(&spec2, 0.5)?;
 job.submit()?;
+// ...then, host-side, unwrap each phase map and fit its plane in f64:
+let (plane1, phase1) = unwrap_and_fit(backend, &spec1, width, height)?;  // Ch.9-10
+let (plane2, phase2) = unwrap_and_fit(backend, &spec2, width, height)?;
 ```
 
 Out of this come the two `PhasePlane`s wrapped in a `Detection` struct.
