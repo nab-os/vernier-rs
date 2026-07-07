@@ -1,0 +1,25 @@
+[package]
+name = "vernier-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "vernier"
+path = "src/main.rs"
+
+[features]
+default = ["gpu"]
+gpu = ["dep:vernier-gpu"]
+cuda = ["dep:vernier-cuda"]
+vulkan = ["vernier-patterns/vulkan"]
+
+[dependencies]
+argh = "0.1.19"
+vernier-core = { path = "../vernier-core" }
+vernier-cpu = { path = "../vernier-cpu" }
+vernier-spectral = { path = "../vernier-spectral" }
+vernier-pose = { path = "../vernier-pose" }
+vernier-patterns = { path = "../vernier-patterns" }
+image = { version = "0.25.10", features = ["jpeg", "png", "bmp", "tiff"] }
+vernier-gpu = { version = "0.1.0", path = "../vernier-gpu", optional = true }
+vernier-cuda = { path = "../vernier-cuda", optional = true }
