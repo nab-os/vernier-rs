@@ -1,0 +1,20 @@
+[package]
+name = "vernier-cabi"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+cuda = ["dep:vernier-cuda"]
+
+[dependencies]
+vernier-core      = { path = "../vernier-core" }
+vernier-cpu       = { path = "../vernier-cpu" }
+vernier-cuda      = { path = "../vernier-cuda", optional = true }
+vernier-spectral = { path = "../vernier-spectral" }
+vernier-pose      = { path = "../vernier-pose" }
+
+[build-dependencies]
+cbindgen = "0.29"
