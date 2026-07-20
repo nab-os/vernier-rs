@@ -1,0 +1,20 @@
+[package]
+name = "vernier-py"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "vernier_py"
+crate-type = ["cdylib"]
+
+[features]
+cuda = ["dep:vernier-cuda"]
+
+[dependencies]
+pyo3   = { version = "0.29", features = ["extension-module", "abi3-py39"] }
+numpy  = "0.29"
+vernier-core      = { path = "../vernier-core" }
+vernier-cpu       = { path = "../vernier-cpu" }
+vernier-cuda      = { path = "../vernier-cuda", optional = true }
+vernier-spectral = { path = "../vernier-spectral" }
+vernier-pose      = { path = "../vernier-pose" }
