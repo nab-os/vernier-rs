@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Vernier</RootNamespace>
+    <AssemblyName>Vernier</AssemblyName>
+    <Description>P/Invoke bindings to vernier-rs — high-resolution pose measurement from coded patterns.</Description>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+
+  <ItemGroup>
+    <Compile Remove="examples/**/*.cs" />
+  </ItemGroup>
+
+</Project>
