@@ -32,6 +32,7 @@ does it. If you can read code, you can follow every step.
 - **Chapter 16** — Assembling the final absolute pose
 - **Chapter 17** — The whole call chain in one place
 - **Chapter 18** — Bonus: measuring tilt (3D)
+- **Chapter 19** — Bonus: running on the GPU with CUDA
 
 ---
 
@@ -129,11 +130,12 @@ the journey an image takes, and which crate owns each leg:
 
 Two words you'll see a lot:
 
-- **Backend** — the thing that actually runs the maths. There's a CPU backend
-  (`vernier-cpu`) and a GPU one. They're interchangeable because they all
-  implement the same `ComputeBackend` trait (Rust's version of an interface).
-  Every function that does real computation is written as "give me *any*
-  backend and I'll run on it."
+- **Backend** — the thing that actually runs the maths. There are three: a CPU
+  backend (`vernier-cpu`), a Vulkan/GLSL compute-shader backend (`vernier-gpu`),
+  and an NVIDIA CUDA + cuFFT backend (`vernier-cuda`). They're interchangeable
+  because they all implement the same `ComputeBackend` trait (Rust's version of
+  an interface). Every function that does real computation is written as "give
+  me *any* backend and I'll run on it." Chapter 19 walks through the CUDA one.
 - **Detector** — the high-level object you actually call. It holds the
   configuration and hands work to a backend.
 
@@ -1065,6 +1067,116 @@ fine, again and again — the vernier idea, all the way down.
 
 ---
 
+## Chapter 19 — Bonus: running on the GPU with CUDA
+
+Everything so far quietly assumed the maths ran on the CPU (`vernier-cpu`). But
+none of Chapters 5–10 actually *named* the CPU. They were written against the
+`ComputeBackend`/`ComputeJob` traits (`vernier-core/src/backend.rs:111`), so the
+whole spectral pipeline is generic: `analyze_two<B: ComputeBackend>` runs on
+*any* backend you hand it. `vernier-cuda` is one such backend — it runs the exact
+same pipeline on an NVIDIA GPU. Nothing in the algorithm changes; only *where the
+arithmetic happens* does.
+
+**The contract.** `CudaBackend` implements `ComputeBackend`
+(`vernier-cuda/src/backend.rs:123`) and `CudaJob` implements `ComputeJob`. Every
+primitive the pipeline calls — `fft2d`, `peak_search`, `bandpass_from_peaks`,
+`ifft2d`, `extract_phase` — has a CUDA version with an identical signature. Swap
+the backend, and Chapters 5–10 replay on the GPU unchanged.
+
+**Setup: compile kernels once, at startup.** The GPU can't run Rust; it runs
+kernels written in CUDA C. Those kernels live as one big string, `KERNEL_SRC`
+(`vernier-cuda/src/kernels.rs:6`), and are compiled *at runtime* by NVRTC (NVIDIA's
+just-in-time compiler) into PTX, the GPU's assembly (`vernier-cuda/src/backend.rs:62`):
+
+```rust
+let ptx = compile_ptx(KERNEL_SRC).map_err(|e| VernierError::Backend(e.to_string()))?;
+// ...then load every named kernel and cache its callable handle:
+dev.load_ptx(ptx, "vernier", kernel_names)?;
+```
+
+All 14 kernels (`scale`, `magnitude_inplace`, `filter_annulus`,
+`gaussian_blur_h/v`, `argmax_local/global`, `band_angular_filter`, `peak_order`,
+`bandpass`, `extract_phase`, the two plane-fit reductions, …) are compiled once
+into a `CudaContext` (`vernier-cuda/src/backend.rs:58`) and reused for every frame.
+
+**Memory: host and device are separate worlds.** The GPU has its own memory. A
+`CudaBuffer` is just a slab of device memory (`CudaSlice<f32>`) plus a width and
+height. Getting the image onto the GPU is an explicit copy — and here's the neat
+part: a `Complex32` is already `{ re, im }` as two `f32`s, so the whole slice is
+*reinterpreted* as a flat `float` array (no conversion) and shipped across
+(`vernier-cuda/src/backend.rs:131`):
+
+```rust
+let floats: &[f32] = bytemuck::cast_slice(data);       // Complex32[] viewed as f32[]
+let dev_slice = self.ctx.dev.htod_sync_copy(floats)?;  // host -> device copy
+```
+
+`download` does the reverse (`dtoh_sync_copy`, then reinterpret back to
+`Complex32`). These two copies are the only bridge between CPU and GPU; everything
+between them stays on the device.
+
+**The FFT: borrow NVIDIA's, don't rewrite it.** Chapter 5's `fft2d` on CPU
+forwarded to an FFT planner; on CUDA it forwards to **cuFFT**, NVIDIA's FFT
+library, called through a tiny raw-FFI shim (`vernier-cuda/src/backend.rs:22`).
+`cufft_2d` (`vernier-cuda/src/backend.rs:171`) looks up a cached complex-to-complex
+2D plan for this image size (building one the first time), then executes it *in
+place* on the device pointer:
+
+```rust
+let mut plans = self.ctx.fft_plans.lock().unwrap();   // plan cache, keyed by (height, width)
+// ...cufftMakePlan2d(...) once per size, then reused every frame...
+cufftExecC2C(handle, ptr, ptr, direction)             // FORWARD or INVERSE, in place
+```
+
+One wrinkle: cuFFT's inverse transform comes out unnormalised (scaled up by
+`width·height`), so `ifft2d` chases it with a one-line `scale` kernel that
+multiplies every value by `1/(w·h)` (`vernier-cuda/src/backend.rs:298`). And unlike
+the CPU's radix FFT, cuFFT handles non-power-of-two sizes natively (there's a test
+for exactly that).
+
+**Each pipeline step becomes a kernel launch.** Where the CPU ran a `for` loop
+over pixels, the GPU launches thousands of threads that each handle a few pixels
+at once. A launch just says "run this kernel over this grid of threads":
+
+```rust
+self.ctx.bandpass_fn.clone().launch(cfg, (&mut buf.data, width, height, cx, cy, sigma))?;
+```
+
+The interesting cases are the ones that *reduce* many values to a few — like
+Chapter 6's "find the brightest bin". On the CPU that's a serial scan; on the GPU
+it's a **two-stage parallel reduction** (`peak_search`,
+`vernier-cuda/src/backend.rs:399`): `argmax_local` has each block of 256 threads
+reduce its chunk to a single best `(magnitude, index)`, then `argmax_global`
+reduces those partial winners to the one global maximum. The band-pass, the
+annulus mask, the blur, the phase extraction, and the direct-from-peak plane fit
+(`spectral_plane_fit_two`, the Chapter 10 alternative, done as a
+`partial`→`global` reduction at `vernier-cuda/src/backend.rs:519`) all follow the
+same shape.
+
+**The job model, and why `submit` matters.** Just like the CPU, you `begin()` a
+job, issue operations, and `submit()`. But GPU launches are *asynchronous* — they
+queue up and return immediately. `submit` is the barrier that finally waits for
+the GPU to finish (`vernier-cuda/src/backend.rs:559`):
+
+```rust
+fn submit(self) -> Result<()> {
+    self.ctx.dev.synchronize()   // block until every queued kernel has completed
+}
+```
+
+That's why the pipeline batches all its FFT/filter/IFFT launches inside one job
+block and only synchronises once — issuing work is cheap, waiting is what costs.
+
+**The one-paragraph summary.** Copy the image to the GPU once; run the identical
+FFT → peak-search → band-pass → IFFT → plane-fit pipeline as CUDA kernels (with
+cuFFT doing the transforms and parallel reductions doing the argmax/plane-fit);
+copy the handful of result numbers back. The `Detection` that comes out is the
+same struct Chapter 17 produced — the physics is backend-independent, and CUDA is
+just a very fast place to run it. (The `vernier-gpu` crate does the same thing
+with Vulkan/GLSL compute shaders instead of CUDA, for non-NVIDIA hardware.)
+
+---
+
 ## Where to go next in the code
 
 If you want to keep exploring, here's a reading order that follows this course:
@@ -1077,6 +1189,8 @@ If you want to keep exploring, here's a reading order that follows this course:
 6. `vernier-patterns/src/lfsr.rs` — Chapter 14, the code sequence.
 7. `vernier-pose/src/absolute.rs` — Chapters 15–16, the decode and assembly.
 8. `vernier-detector/src/megarena.rs` — Chapter 17, the top-level entry point.
+9. `vernier-cuda/src/backend.rs` and `kernels.rs` — Chapter 19, the same
+   pipeline on the GPU.
 
 Every chapter's code snippet is real and lightly trimmed; open the referenced
 file and line to see the full, exact version.
