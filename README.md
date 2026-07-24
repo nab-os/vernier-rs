@@ -11,6 +11,13 @@ The library runs on CPU by default and can dispatch to a Vulkan GPU (any vendor)
 
 ---
 
+## Documentation
+
+- [`docs/architecture.md`](docs/architecture.md) — how the crates fit together.
+- [`docs/vernier-course.md`](docs/vernier-course.md) — a step-by-step course, from a raw image to a final pose.
+
+---
+
 ## Building
 
 You need a recent Rust toolchain (1.85+).
