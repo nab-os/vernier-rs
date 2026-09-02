@@ -30,7 +30,17 @@ features = [
     "Window",
 ]
 
+# The generators are per-pixel CPU loops, and an unoptimized wasm build takes
+# most of a second on a 512² render — enough to make dragging a slider feel
+# broken. Optimizing dev builds costs a little compile time and keeps
+# `dx serve` interactive.
+[profile.dev]
+opt-level = 2
+
+# Speed, not size: this is a compute-bound page whose whole job is running
+# per-pixel loops, and a few hundred KB of extra wasm is a better trade than a
+# preview that lags behind the slider.
 [profile.release]
-opt-level = "s"
+opt-level = 3
 lto = true
 codegen-units = 1
