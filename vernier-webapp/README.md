@@ -16,11 +16,33 @@ rustup target add wasm32-unknown-unknown
 cargo install dioxus-cli@0.7.10 --locked   # provides `dx`
 
 cd vernier-webapp
-dx serve                                   # http://localhost:8080
+dx serve --release                         # http://localhost:8080
 ```
 
 `dx bundle --release` produces a static directory that can be served from
 anywhere; there is no server side.
+
+**Use `--release`.** The generators are per-pixel CPU loops, so the build
+profile decides whether the preview keeps up with the slider. Measured in
+headless Chromium on this machine, per render:
+
+| Image | debug (`opt-level = 2`) | release |
+| --- | --- | --- |
+| 256² | 137 ms | 14 ms |
+| 512² | 471 ms | 53 ms |
+| 1024² | 1.4 s | 223 ms |
+| 2048² | 5.5 s | 852 ms |
+
+Release is interactive up to 1024²; 2048² is a "set it and download it" size
+either way. The dev profile is already pinned to `opt-level = 2` in
+`Cargo.toml` because a fully unoptimized wasm build takes ~960 ms on a 512²
+render, which makes dragging a slider feel broken.
+
+Most of that time is the per-pixel closure in `vernier_patterns::render`, which
+recomputes `sin_cos` of the pose angle for every pixel rather than hoisting it
+out of the loop. Hoisting it would speed up the CLI and the test suite as much
+as this page, but it is a change to the library, not to this crate, so it is
+left alone here.
 
 ## What you can set
 
