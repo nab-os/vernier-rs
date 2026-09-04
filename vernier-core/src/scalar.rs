@@ -11,4 +11,5 @@ pub mod consts {
 
     pub const PI: Real = std::f64::consts::PI;
     pub const TAU: Real = std::f64::consts::TAU;
+    pub const SQRT_2: Real = std::f64::consts::SQRT_2;
 }
