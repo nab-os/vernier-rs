@@ -48,10 +48,11 @@ left alone here.
 
 | Section | Parameters |
 | --- | --- |
-| Pattern type | Periodic, Megarena, Stamp, QR-like |
+| Pattern type | Periodic, Megarena, Checkerboard, Stamp, QR-like |
 | Image | width, height (16–2048 px), plus 256/512/1024/2048 presets |
 | Periodic | spatial period (px) |
 | Megarena | dot period (px), LFSR order (4–12 bits), LFSR offset |
+| Checkerboard | square side (px), LFSR order (4–12 bits), LFSR offset, supersampling (1–8×/edge), uncoded reference |
 | Stamp | tile size (px) |
 | QR-like | modules per axis, module size (px) |
 | Pose | X translation, Y translation, orientation (degrees, shown in radians too) |
@@ -67,6 +68,25 @@ pasted straight into a test.
 Alongside the preview, the readouts show what the parameters work out to — for
 Megarena, the code length (`2^order − 1`) and the absolute range in pixels
 (`code_length × 3 × period`, three periods per bit).
+
+## Two parameters the checkerboard needs care with
+
+**Square side is not the carrier period.** The checkerboard's two carriers run
+along the diagonals, at ±45° to the square edges, so successive fringes are
+`a·√2` apart. A detector configured with the square side would be wrong by that
+factor, so the panel shows the derived carrier period in both the field hint and
+the readouts, next to the side you actually set.
+
+**Supersampling is not cosmetic.** Unlike the other generators the checkerboard
+is binary with hard edges, so point sampling (`1×`) aliases, and the aliasing
+moves the *measured carrier phase* — it corrupts the measurement, not just the
+picture. The control goes down to `1×` because seeing that happen is useful;
+`4×` is the upstream default and the right setting for generating real targets.
+
+The **uncoded reference** toggle renders the plain checkerboard with every
+coding site left at its parity colour. Flipping it against the coded render
+shows exactly which squares the position code inverts — roughly one square in
+nine.
 
 ## Stubs
 
