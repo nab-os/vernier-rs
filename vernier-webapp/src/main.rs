@@ -291,6 +291,62 @@ fn pattern_fields(mut settings: Signal<PatternSettings>, current: &PatternSettin
                 on_change: move |value: f64| settings.write().lfsr_offset = value.round() as i64,
             }
         },
+        PatternKind::Checkerboard => rsx! {
+            NumberField {
+                label: "Square side".to_string(),
+                value: current.square_px,
+                min: 2.0,
+                max: 200.0,
+                step: 0.1,
+                unit: "px".to_string(),
+                hint: format!(
+                    "One checkerboard square. The carriers run diagonally, so a fringe is {:.2} px \
+                     (a√2) apart — that, not this, is the period a detector is given.",
+                    current.carrier_period_px()
+                ),
+                on_change: move |value: f64| settings.write().square_px = value,
+            }
+            NumberField {
+                label: "LFSR order".to_string(),
+                value: current.order as f64,
+                min: *ORDER_RANGE.start() as f64,
+                max: *ORDER_RANGE.end() as f64,
+                step: 1.0,
+                unit: "bits".to_string(),
+                hint: "Bits per unique window — sets the absolute range.".to_string(),
+                on_change: move |value: f64| settings.write().order = value.round() as u32,
+            }
+            NumberField {
+                label: "LFSR offset".to_string(),
+                value: current.lfsr_offset as f64,
+                min: 0.0,
+                max: 512.0,
+                step: 1.0,
+                unit: String::new(),
+                hint: "Code index placed at supercell 0.".to_string(),
+                on_change: move |value: f64| settings.write().lfsr_offset = value.round() as i64,
+            }
+            NumberField {
+                label: "Supersampling".to_string(),
+                value: current.supersample as f64,
+                min: 1.0,
+                max: 8.0,
+                step: 1.0,
+                unit: "×/edge".to_string(),
+                hint: "Sub-samples per pixel edge. The pattern has hard edges; 1× point-samples \
+                       them and aliases, which shifts the measured carrier phase."
+                    .to_string(),
+                on_change: move |value: f64| settings.write().supersample = value.round() as u32,
+            }
+            Toggle {
+                label: "Uncoded reference".to_string(),
+                checked: current.plain_checkerboard,
+                hint: "Renders the plain checkerboard with every coding site left at its parity \
+                       colour, so you can see exactly which squares the code inverts."
+                    .to_string(),
+                on_change: move |value: bool| settings.write().plain_checkerboard = value,
+            }
+        },
         PatternKind::Stamp => rsx! {
             NumberField {
                 label: "Tile size".to_string(),
