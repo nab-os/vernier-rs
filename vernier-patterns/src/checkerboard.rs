@@ -101,6 +101,13 @@ pub const X_SITE: (i64, i64) = (1, 0);
 /// Position of the y-code site within a supercell.
 pub const Y_SITE: (i64, i64) = (0, 1);
 
+/// Position of the `u`-code site under [`CodeLayout::Diagonals`], as
+/// `(u mod 3, v mod 3)` — the direct mirror of [`X_SITE`] in the rotated frame.
+pub const U_SITE: (i64, i64) = (1, 0);
+
+/// Position of the `v`-code site under [`CodeLayout::Diagonals`].
+pub const V_SITE: (i64, i64) = (0, 1);
+
 /// Which axis's code bit a coding square carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodeAxis {
@@ -108,6 +115,43 @@ pub enum CodeAxis {
     X,
     /// Square encodes the y-direction code bit of its supercell row.
     Y,
+}
+
+/// Which directions the position code is written along.
+///
+/// The squares and the carriers are rigidly locked 45° apart — the carriers are
+/// the `cos(π(x±y)/a)` terms, always at ±45° to the square edges — so tilting
+/// the pattern tilts both together. What *is* free is the direction the code
+/// runs, and that is what this selects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CodeLayout {
+    /// Indexed by the square-lattice axes `(i, j)`: the original design. The
+    /// code grid runs parallel to the square edges, 45° away from the carriers,
+    /// and the decoder recovers `(i, j)` from the phase pair as
+    /// `((φ₁±φ₂)/2π)`.
+    #[default]
+    LatticeAxes,
+    /// Indexed by the lattice diagonals `(i+j, i−j)`: the code runs *parallel*
+    /// to the carriers, so each phase plane indexes one code axis directly with
+    /// no combination step — `φ₁/π` is the first code coordinate, `φ₂/π` the
+    /// second.
+    ///
+    /// Rendered at 45° this is the "diamond squares, upright code grid" layout:
+    /// the tiles read as diamonds while the supercell structure lines up with
+    /// the image axes.
+    ///
+    /// The three design properties survive the change. Coding sites are still
+    /// exactly 2/9 of squares, because `(i, j) ↦ (i+j, i−j)` is a bijection
+    /// modulo 3 (2 is invertible there), so the residue pair is still uniform
+    /// over the nine cells. Inversions are still balanced, because a site's
+    /// parity is `u mod 2` and each family's `u` advances by 3 per supercell,
+    /// alternating colour. And inverting a square centre is still phase-neutral,
+    /// which never depended on *which* squares were chosen.
+    ///
+    /// The one real cost is range: lines of constant `i+j` are `a/√2` apart
+    /// rather than `a`, so the same bit count spans `√2` less distance. See
+    /// [`Checkerboard::range_px`].
+    Diagonals,
 }
 
 /// Parameters of a coded checkerboard pattern.
@@ -128,6 +172,8 @@ pub struct Checkerboard {
     /// hard edges, so point sampling would alias badly and move the measured
     /// carrier phase; 4×4 box sampling is enough to render a clean edge.
     supersample: u32,
+    /// Which directions the code runs along.
+    layout: CodeLayout,
 }
 
 impl Checkerboard {
@@ -141,7 +187,19 @@ impl Checkerboard {
             code,
             lfsr_offset: 0,
             supersample: 4,
+            layout: CodeLayout::LatticeAxes,
         })
+    }
+
+    /// Sets which directions the position code runs along.
+    pub fn with_code_layout(mut self, layout: CodeLayout) -> Self {
+        self.layout = layout;
+        self
+    }
+
+    /// Which directions the code runs along.
+    pub fn code_layout(&self) -> CodeLayout {
+        self.layout
     }
 
     /// Sets the LFSR index placed at supercell 0.
@@ -169,9 +227,26 @@ impl Checkerboard {
         self.square_px * SQRT_2
     }
 
-    /// Absolute range along one axis, in squares: `CELL · (2^order − 1)`.
+    /// Absolute range along one code axis, in code steps: `CELL · (2^order − 1)`.
+    ///
+    /// A "step" is one square under [`CodeLayout::LatticeAxes`] and one diagonal
+    /// index under [`CodeLayout::Diagonals`]; those are not the same distance,
+    /// so use [`range_px`](Self::range_px) to compare the two layouts.
     pub fn range_squares(&self) -> i64 {
         CELL * self.code.len() as i64
+    }
+
+    /// Absolute range along one code axis in pixels.
+    ///
+    /// Lines of constant `i` are `a` apart, but lines of constant `i+j` are only
+    /// `a/√2` apart, so indexing the code diagonally buys the shorter range by
+    /// exactly `√2` for the same square side and bit count.
+    pub fn range_px(&self) -> Real {
+        let steps = self.range_squares() as Real;
+        match self.layout {
+            CodeLayout::LatticeAxes => steps * self.square_px,
+            CodeLayout::Diagonals => steps * self.square_px / SQRT_2,
+        }
     }
 
     /// The code bit of supercell `index` along either axis.
@@ -192,13 +267,49 @@ impl Checkerboard {
         }
     }
 
+    /// Diagonal coordinates of square `(i, j)`: `(i+j, i−j)`, the pair the two
+    /// carrier phases read off directly (`φ₁ = πu`, `φ₂ = πv` at centres).
+    ///
+    /// Only pairs with `u ≡ v (mod 2)` name a real square — the map is a
+    /// rotation by 45° and a scaling by `√2`, so its image is the even
+    /// sublattice of `Z²`.
+    pub fn diagonal_coords(i: i64, j: i64) -> (i64, i64) {
+        (i + j, i - j)
+    }
+
+    /// Which code bit, if any, the square at diagonal coordinates `(u, v)`
+    /// carries under [`CodeLayout::Diagonals`]. Same residue test as
+    /// [`coding_axis`](Self::coding_axis), applied in the rotated frame.
+    /// Which code bit, if any, the square at diagonal coordinates `(u, v)`
+    /// carries under [`CodeLayout::Diagonals`].
+    pub fn diagonal_coding_axis(u: i64, v: i64) -> Option<CodeAxis> {
+        let within = (u.rem_euclid(CELL), v.rem_euclid(CELL));
+        if within == U_SITE {
+            Some(CodeAxis::X)
+        } else if within == V_SITE {
+            Some(CodeAxis::Y)
+        } else {
+            None
+        }
+    }
+
     /// Whether the square at `(i, j)` is painted against its checkerboard
     /// parity. True only at a coding site whose bit is `0`.
     pub fn square_inverted(&self, i: i64, j: i64) -> bool {
-        match Self::coding_axis(i, j) {
-            Some(CodeAxis::X) => self.code_bit(i.div_euclid(CELL)) == 0,
-            Some(CodeAxis::Y) => self.code_bit(j.div_euclid(CELL)) == 0,
-            None => false,
+        match self.layout {
+            CodeLayout::LatticeAxes => match Self::coding_axis(i, j) {
+                Some(CodeAxis::X) => self.code_bit(i.div_euclid(CELL)) == 0,
+                Some(CodeAxis::Y) => self.code_bit(j.div_euclid(CELL)) == 0,
+                None => false,
+            },
+            CodeLayout::Diagonals => {
+                let (u, v) = Self::diagonal_coords(i, j);
+                match Self::diagonal_coding_axis(u, v) {
+                    Some(CodeAxis::X) => self.code_bit(u.div_euclid(CELL)) == 0,
+                    Some(CodeAxis::Y) => self.code_bit(v.div_euclid(CELL)) == 0,
+                    None => false,
+                }
+            }
         }
     }
 
@@ -401,6 +512,185 @@ mod tests {
         }
         let fill = white as Real / (n * n) as Real;
         assert!((fill - 0.5).abs() < 1e-3, "fill {fill} drifted from 50/50");
+    }
+
+    /// The three design properties, asserted for whichever layout is given.
+    fn assert_design_properties(c: &Checkerboard, label: &str) {
+        let n = 3 * 255;
+
+        // Cheap: coding sites stay 2 of every 9 squares.
+        let mut sites = 0i64;
+        for i in 0..n {
+            for j in 0..n {
+                let coding = match c.code_layout() {
+                    CodeLayout::LatticeAxes => Checkerboard::coding_axis(i, j).is_some(),
+                    CodeLayout::Diagonals => {
+                        let (u, v) = Checkerboard::diagonal_coords(i, j);
+                        Checkerboard::diagonal_coding_axis(u, v).is_some()
+                    }
+                };
+                if coding {
+                    sites += 1;
+                }
+            }
+        }
+        let density = sites as Real / (n * n) as Real;
+        assert!(
+            (density - 2.0 / 9.0).abs() < 1e-3,
+            "{label}: coding-site density {density} should be 2/9"
+        );
+
+        // Balanced: the inversions must not tilt the 50/50 fill.
+        let mut white = 0i64;
+        for i in 0..n {
+            for j in 0..n {
+                if c.square_is_white(i, j) {
+                    white += 1;
+                }
+            }
+        }
+        // Global fill only. For the diagonal layout this holds because the two
+        // families' colour biases cancel, not because either is balanced —
+        // see `diagonal_code_bands_are_monochrome_by_construction`.
+        let fill = white as Real / (n * n) as Real;
+        assert!((fill - 0.5).abs() < 2e-3, "{label}: fill {fill} drifted from 50/50");
+
+        // Phase-neutral: the code perturbation stays purely real in the carrier
+        // basis, so it shrinks the peak without rotating it.
+        for axis1 in [true, false] {
+            let (_, coded_im) = lattice_carrier(c, n, axis1, true);
+            assert!(
+                coded_im.abs() < 1e-9,
+                "{label}: code rotated carrier {}, imaginary part {coded_im}",
+                if axis1 { 1 } else { 2 }
+            );
+        }
+    }
+
+    #[test]
+    fn diagonal_layout_keeps_every_design_property() {
+        let diagonal = Checkerboard::new(8.0, 8)
+            .unwrap()
+            .with_code_layout(CodeLayout::Diagonals);
+        assert_design_properties(&diagonal, "diagonals");
+
+        // And the original is unchanged by the refactor.
+        let axes = Checkerboard::new(8.0, 8).unwrap();
+        assert_eq!(axes.code_layout(), CodeLayout::LatticeAxes);
+        assert_design_properties(&axes, "lattice axes");
+    }
+
+    #[test]
+    fn diagonal_layout_actually_moves_the_code() {
+        // Same parameters, different layout: the painted colours must differ,
+        // or the option would be a no-op.
+        let axes = Checkerboard::new(8.0, 8).unwrap();
+        let diagonal = axes.clone().with_code_layout(CodeLayout::Diagonals);
+
+        let mut differing = 0;
+        for i in 0..90 {
+            for j in 0..90 {
+                if axes.square_is_white(i, j) != diagonal.square_is_white(i, j) {
+                    differing += 1;
+                }
+            }
+        }
+        assert!(differing > 0, "the two layouts paint identical squares");
+    }
+
+    /// Colour balance *within each code band*, which is the property that
+    /// actually protects the measurement.
+    ///
+    /// A global 50/50 fill can hide a broken design: two families whose colour
+    /// biases happen to cancel still average out overall while each one drags
+    /// the local brightness with the code. What matters is that the sites
+    /// sharing a single code bit — the ones that flip together — are half white
+    /// and half black, so flipping them is brightness-neutral where it happens.
+    fn worst_band_imbalance(c: &Checkerboard) -> Real {
+        let n = 240;
+        // For each code band, count the colours of the sites it owns.
+        let mut bands: std::collections::HashMap<(bool, i64), (i64, i64)> =
+            std::collections::HashMap::new();
+        for i in -n..n {
+            for j in -n..n {
+                let (u, v) = Checkerboard::diagonal_coords(i, j);
+                let (axis, band) = match c.code_layout() {
+                    CodeLayout::LatticeAxes => match Checkerboard::coding_axis(i, j) {
+                        Some(CodeAxis::X) => (true, i.div_euclid(CELL)),
+                        Some(CodeAxis::Y) => (false, j.div_euclid(CELL)),
+                        None => continue,
+                    },
+                    CodeLayout::Diagonals => match Checkerboard::diagonal_coding_axis(u, v) {
+                        Some(CodeAxis::X) => (true, u.div_euclid(CELL)),
+                        Some(CodeAxis::Y) => (false, v.div_euclid(CELL)),
+                        None => continue,
+                    },
+                };
+                let entry = bands.entry((axis, band)).or_insert((0, 0));
+                if Checkerboard::parity_is_white(i, j) {
+                    entry.0 += 1;
+                } else {
+                    entry.1 += 1;
+                }
+            }
+        }
+        // Ignore bands clipped by the edge of the scanned window.
+        bands
+            .values()
+            .filter(|(w, b)| w + b >= 40)
+            .map(|&(w, b)| ((w - b).abs() as Real) / ((w + b) as Real))
+            .fold(0.0, Real::max)
+    }
+
+    #[test]
+    fn lattice_axis_code_bands_are_colour_balanced() {
+        let c = Checkerboard::new(8.0, 8).unwrap();
+        let worst = worst_band_imbalance(&c);
+        assert!(
+            worst < 0.2,
+            "a code band is {:.0}% colour-biased, so flipping it shifts the local \
+             brightness",
+            worst * 100.0
+        );
+    }
+
+    #[test]
+    fn diagonal_code_bands_are_monochrome_by_construction() {
+        // The structural cost of running the code along the carriers, recorded
+        // so nobody adopts the layout without meeting it.
+        //
+        // A square's colour is `(i+j) mod 2 = u mod 2`, so colour is *constant*
+        // along a line of constant u — the diagonals of a checkerboard are
+        // monochrome. This layout writes its u code along exactly those lines,
+        // so every coding site of a band is the same colour and flipping the
+        // band moves the local brightness. The lattice-axis layout runs its
+        // bands along lines where colour alternates, which is why it gets the
+        // balance for free.
+        //
+        // It cannot be tuned away by moving the sites: u and v always share a
+        // parity (a square exists only where u ≡ v mod 2), so pinning a
+        // family's residues pins its colour too.
+        let c = Checkerboard::new(8.0, 8)
+            .unwrap()
+            .with_code_layout(CodeLayout::Diagonals);
+        let worst = worst_band_imbalance(&c);
+        assert!(
+            worst > 0.99,
+            "expected fully monochrome code bands, got {:.0}% bias",
+            worst * 100.0
+        );
+    }
+
+    #[test]
+    fn diagonal_layout_costs_sqrt2_of_range() {
+        let axes = Checkerboard::new(8.0, 8).unwrap();
+        let diagonal = axes.clone().with_code_layout(CodeLayout::Diagonals);
+
+        // Same bit count either way...
+        assert_eq!(axes.range_squares(), diagonal.range_squares());
+        // ...but constant-(i+j) lines are a/sqrt(2) apart, not a.
+        let ratio = axes.range_px() / diagonal.range_px();
+        assert!((ratio - SQRT_2).abs() < 1e-9, "range ratio {ratio} should be sqrt(2)");
     }
 
     #[test]

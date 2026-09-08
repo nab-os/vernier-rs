@@ -239,6 +239,12 @@ pub struct RenderCheckerboardArgs {
     /// render the uncoded checkerboard instead (the carrier with no code)
     #[argh(switch)]
     pub plain: bool,
+
+    /// index the code along the lattice diagonals (parallel to the carriers)
+    /// instead of the square edges; with --theta pi/4 this gives diamond
+    /// squares with an upright code grid
+    #[argh(switch)]
+    pub diagonal_code: bool,
 }
 
 /// Generate the explainer figures and measurements for the coded checkerboard.
