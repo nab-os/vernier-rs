@@ -83,6 +83,20 @@ moves the *measured carrier phase* — it corrupts the measurement, not just the
 picture. The control goes down to `1×` because seeing that happen is useful;
 `4×` is the upstream default and the right setting for generating real targets.
 
+It is also the one control here that costs real time, since it multiplies the
+per-pixel work by its square. Release build, 512², best of five:
+
+| Supersampling | Samples/px | Per render |
+| --- | --- | --- |
+| 1× | 1 | 26 ms |
+| 2× | 4 | 68 ms |
+| 4× (default) | 16 | 237 ms |
+| 8× | 64 | 866 ms |
+
+So the default checkerboard costs about 4× a megarena of the same size, and `8×`
+is slow enough to feel. Sweep a slider at `1×` or `2×` if you are hunting for a
+parameter set, then put it back to `4×` for the render you keep.
+
 The **uncoded reference** toggle renders the plain checkerboard with every
 coding site left at its parity colour. Flipping it against the coded render
 shows exactly which squares the position code inverts — roughly one square in
