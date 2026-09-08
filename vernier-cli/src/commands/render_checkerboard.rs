@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use vernier_patterns::{PatternPose, checkerboard::Checkerboard};
+use vernier_patterns::{PatternPose, checkerboard::{Checkerboard, CodeLayout}};
 
 use crate::imageio;
 
@@ -14,12 +14,20 @@ pub struct RenderCheckerboardArgs {
     pub code_size: u32,
     /// Render the uncoded carrier instead of the coded pattern.
     pub plain: bool,
+    /// Index the code along the lattice diagonals rather than the square edges.
+    pub diagonal_code: bool,
     pub output: std::path::PathBuf,
 }
 
 pub fn run(args: &RenderCheckerboardArgs) -> Result<(), String> {
+    let layout = if args.diagonal_code {
+        CodeLayout::Diagonals
+    } else {
+        CodeLayout::LatticeAxes
+    };
     let pattern = Checkerboard::new(args.square_px, args.code_size)
-        .ok_or_else(|| format!("unsupported code size {}; must be 4..=12", args.code_size))?;
+        .ok_or_else(|| format!("unsupported code size {}; must be 4..=12", args.code_size))?
+        .with_code_layout(layout);
 
     let pose = PatternPose::new(args.x, args.y, args.theta);
     let image = if args.plain {
