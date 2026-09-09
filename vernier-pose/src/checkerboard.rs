@@ -72,7 +72,9 @@ use std::collections::BTreeMap;
 
 use vernier_core::scalar::consts::{PI, TAU};
 use vernier_core::{Pose, Real};
-use vernier_patterns::checkerboard::{CELL, Checkerboard, X_SITE, Y_SITE};
+use vernier_patterns::checkerboard::{
+    CELL, Checkerboard, CodeLayout, U_SITE, V_SITE, X_SITE, Y_SITE,
+};
 use vernier_patterns::lfsr::{Lfsr, WindowIndex};
 use vernier_spectral::spectrum::Detection;
 
@@ -201,6 +203,21 @@ pub fn extract_code(
     intensity: &[f32],
     order: u32,
 ) -> Result<CheckerboardCode, CheckerboardError> {
+    extract_code_with_layout(detection, intensity, order, CodeLayout::LatticeAxes)
+}
+
+/// [`extract_code`] for a pattern whose code was written along `layout`.
+///
+/// The layout is not inferred. It could be — the two put their coding sites in
+/// different places, so the wrong one scores badly — but that would spend eight
+/// more hypotheses on a property the caller already knows, and a silent
+/// misdetection here returns a confident wrong position rather than an error.
+pub fn extract_code_with_layout(
+    detection: &Detection,
+    intensity: &[f32],
+    order: u32,
+    layout: CodeLayout,
+) -> Result<CheckerboardCode, CheckerboardError> {
     let lfsr = Lfsr::maximal(order).ok_or(CheckerboardError::UnsupportedOrder(order))?;
     let index = lfsr.window_index();
 
@@ -252,6 +269,7 @@ pub fn extract_code(
             centre_measured,
             transform_index,
             matrix,
+            layout,
             &lfsr,
             &index,
             order,
@@ -329,6 +347,27 @@ fn binarize(samples: &BTreeMap<(i64, i64), (Real, u64)>) -> BTreeMap<(i64, i64),
         .collect()
 }
 
+/// The coordinates a layout indexes its code in, for a square at `(i, j)`.
+///
+/// Everything upstream of this — sampling, binarizing, the parity hypothesis,
+/// the quarter-turn search — is about the checkerboard itself and is identical
+/// for both layouts. Only *which square carries which bit* differs, and that is
+/// entirely a question of the frame the residues and supercells are counted in.
+fn code_coords(layout: CodeLayout, i: i64, j: i64) -> (i64, i64) {
+    match layout {
+        CodeLayout::LatticeAxes => (i, j),
+        CodeLayout::Diagonals => (i + j, i - j),
+    }
+}
+
+/// The two coding-site residues a layout places within a supercell.
+fn layout_sites(layout: CodeLayout) -> ((i64, i64), (i64, i64)) {
+    match layout {
+        CodeLayout::LatticeAxes => (X_SITE, Y_SITE),
+        CodeLayout::Diagonals => (U_SITE, V_SITE),
+    }
+}
+
 /// The defect map of one rotated frame: every sampled square, and whether its
 /// colour disagrees with the checkerboard parity.
 struct DefectMap {
@@ -342,6 +381,7 @@ fn try_transform(
     centre_measured: (Real, Real),
     transform_index: usize,
     matrix: &[i64; 4],
+    layout: CodeLayout,
     lfsr: &Lfsr,
     index: &WindowIndex,
     order: u32,
@@ -371,6 +411,7 @@ fn try_transform(
                 transform_index,
                 matrix,
                 (delta_i_residue, delta_j_residue),
+                layout,
                 lfsr,
                 index,
                 order,
@@ -434,6 +475,7 @@ fn try_origin(
     transform_index: usize,
     matrix: &[i64; 4],
     delta_residue: (i64, i64),
+    layout: CodeLayout,
     lfsr: &Lfsr,
     index: &WindowIndex,
     order: u32,
@@ -445,11 +487,12 @@ fn try_origin(
             (pattern.1 - delta_residue.1).rem_euclid(CELL),
         )
     };
-    let x_residue = site_residue(X_SITE);
-    let y_residue = site_residue(Y_SITE);
+    let (site_a, site_b) = layout_sites(layout);
+    let a_residue = site_residue(site_a);
+    let b_residue = site_residue(site_b);
 
-    let (x_bits, x_first_cell) = read_site_bits(map, x_residue, true)?;
-    let (y_bits, y_first_cell) = read_site_bits(map, y_residue, false)?;
+    let (x_bits, x_first_cell) = read_site_bits(map, layout, a_residue, true)?;
+    let (y_bits, y_first_cell) = read_site_bits(map, layout, b_residue, false)?;
     let (k_x, x_checks) = localize(&x_bits, lfsr, index, order)?;
     let (k_y, y_checks) = localize(&y_bits, lfsr, index, order)?;
 
@@ -457,20 +500,43 @@ fn try_origin(
     // index of its coding square is 3k + the site's offset in the supercell.
     // The site's residue is what put it in this hypothesis, so `delta` lands on
     // `delta_residue` mod 3 by construction — nothing to re-check there.
-    let delta_i = (CELL * k_x + X_SITE.0) - (CELL * x_first_cell + x_residue.0);
-    let delta_j = (CELL * k_y + Y_SITE.1) - (CELL * y_first_cell + y_residue.1);
+    //
+    // These are offsets in the *code* frame, which is `(i, j)` for the lattice
+    // layout and `(u, v) = (i+j, i−j)` for the diagonal one.
+    let delta_a = (CELL * k_x + site_a.0) - (CELL * x_first_cell + a_residue.0);
+    let delta_b = (CELL * k_y + site_b.1) - (CELL * y_first_cell + b_residue.1);
+
+    // Back into `(i, j)`. A real frame offset is an integer translation of the
+    // square lattice, so in `(u, v)` it always has `Δu + Δv = 2Δi` — an odd sum
+    // names no lattice translation at all, and rejecting it prunes hypotheses
+    // that could otherwise score check bits by coincidence.
+    let (delta_i, delta_j) = match layout {
+        CodeLayout::LatticeAxes => (delta_a, delta_b),
+        CodeLayout::Diagonals => {
+            if (delta_a + delta_b).rem_euclid(2) != 0 {
+                return None;
+            }
+            ((delta_a + delta_b) / 2, (delta_a - delta_b) / 2)
+        }
+    };
 
     let (i, j) = centre_measured;
     let raw_i =
         matrix[0] as Real * i + matrix[1] as Real * j + (map.parity_shift + delta_i) as Real;
     let raw_j = matrix[2] as Real * i + matrix[3] as Real * j + delta_j as Real;
 
-    // Position is known modulo one code period per axis, so report the
-    // representative in `[0, period)` rather than whichever multiple the decode
-    // happened to land on.
+    // Position is known modulo one code period per code axis, and for both
+    // layouts that comes to the same wrap in `(i, j)`.
+    //
+    // For the diagonal layout that is worth spelling out, because wrapping `u`
+    // and `v` separately is wrong: `period = 3·(2ⁿ−1)` is odd, so a lone period
+    // of `u` flips the `u ≡ v (mod 2)` parity and names no square. Only offsets
+    // with `Δu ≡ Δv (mod 2)` are real, so the ambiguity lattice is generated by
+    // `(P, P)` and `(P, −P)` — which in `(i, j)` is exactly `(P, 0)` and
+    // `(0, P)`, the same lattice the axis layout wraps against.
     let period = (CELL * lfsr.len() as i64) as Real;
-    let centre_i = raw_i - period * (raw_i / period).floor();
-    let centre_j = raw_j - period * (raw_j / period).floor();
+    let wrap = |value: Real| value - period * (value / period).floor();
+    let (centre_i, centre_j) = (wrap(raw_i), wrap(raw_j));
 
     Some(CheckerboardCode {
         transform: transform_index,
@@ -489,13 +555,19 @@ fn try_origin(
 /// returns the longest run of consecutive supercells with the index of its first
 /// cell. `by_i` selects which axis indexes the supercells: the x code runs along
 /// `i`, the y code along `j`.
-fn read_site_bits(map: &DefectMap, residue: (i64, i64), by_i: bool) -> Option<(Vec<u8>, i64)> {
+fn read_site_bits(
+    map: &DefectMap,
+    layout: CodeLayout,
+    residue: (i64, i64),
+    by_i: bool,
+) -> Option<(Vec<u8>, i64)> {
     let mut votes: BTreeMap<i64, (usize, usize)> = BTreeMap::new();
     for &((i, j), defect) in &map.squares {
-        if (i.rem_euclid(CELL), j.rem_euclid(CELL)) != residue {
+        let (first, second) = code_coords(layout, i, j);
+        if (first.rem_euclid(CELL), second.rem_euclid(CELL)) != residue {
             continue;
         }
-        let cell = if by_i { i } else { j }.div_euclid(CELL);
+        let cell = if by_i { first } else { second }.div_euclid(CELL);
         let entry = votes.entry(cell).or_insert((0, 0));
         entry.0 += usize::from(defect);
         entry.1 += 1;
@@ -580,7 +652,28 @@ pub fn solve_checkerboard(
     square_size: Real,
     order: u32,
 ) -> Result<(Pose, CheckerboardCode), CheckerboardError> {
-    let code = extract_code(detection, intensity, order)?;
+    solve_checkerboard_with_layout(
+        detection,
+        intensity,
+        square_size,
+        order,
+        CodeLayout::LatticeAxes,
+    )
+}
+
+/// [`solve_checkerboard`] for a pattern whose code was written along `layout`.
+///
+/// Only the coarse stage depends on the layout. The fine pose comes from the
+/// carrier phases, and those are set by the square geometry, which both layouts
+/// share — so everything below the `extract_code` call is common.
+pub fn solve_checkerboard_with_layout(
+    detection: &Detection,
+    intensity: &[f32],
+    square_size: Real,
+    order: u32,
+    layout: CodeLayout,
+) -> Result<(Pose, CheckerboardCode), CheckerboardError> {
+    let code = extract_code_with_layout(detection, intensity, order, layout)?;
 
     // x = a(î + ½), y = a(ĵ + ½) — the inverse of the pattern's phase definition.
     let x = square_size * (code.centre.0 + 0.5);
