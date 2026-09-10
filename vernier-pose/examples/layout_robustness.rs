@@ -23,7 +23,7 @@ use vernier_spectral::spectrum::analyze_two;
 const SIZE: usize = 512;
 const SQUARE: f64 = 8.0;
 const ORDER: u32 = 8;
-const POSES: usize = 8;
+const POSES: usize = 100;
 
 /// Deterministic noise, so a rerun reproduces the table exactly.
 struct Lcg(u64);
@@ -31,7 +31,10 @@ struct Lcg(u64);
 impl Lcg {
     fn next_u32(&mut self) -> u32 {
         self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (self.0 >> 33) as u32
+        // The top 32 bits. `>> 33` kept only 31, which pinned `unit()` to
+        // [0, 0.5): every pose landed at negative x, y and theta, and the
+        // Box-Muller noise was biased.
+        (self.0 >> 32) as u32
     }
 
     fn unit(&mut self) -> f64 {
@@ -133,14 +136,28 @@ fn degrade(image: &mut [f32], kind: Degradation, level: f64, seed: u64) {
     }
 }
 
+/// Poses drawn from a fixed-seed generator: translations uniform over +/-2000 px
+/// (hundreds of squares, never on a square boundary by construction) and
+/// orientations uniform over +/-36 degrees, the same spread as the original
+/// 8-pose set. Seeded, so both layouts -- and every rerun -- see the same set.
 fn poses() -> Vec<PatternPose> {
+    let mut rng = Lcg(0x9e37_79b9_7f4a_7c15);
     (0..POSES)
-        .map(|s| {
-            let s = s as f64;
-            PatternPose::new(s * 137.0 + 3.3, s * -83.0 - 5.7, (s - 3.5) * 0.18)
+        .map(|_| {
+            let x = (rng.unit() - 0.5) * 4000.0;
+            let y = (rng.unit() - 0.5) * 4000.0;
+            let theta = (rng.unit() - 0.5) * 2.0 * 0.63;
+            PatternPose::new(x, y, theta)
         })
         .collect()
 }
+
+/// Worker threads: one per core. Each decode is independent, so the sweep scales
+/// almost linearly -- 100 poses per cell is otherwise an hour of wall time.
+fn threads() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+}
+
 
 fn expected_square(pose: &PatternPose, square: f64) -> (i64, i64) {
     (
@@ -158,32 +175,59 @@ fn evaluate(
 ) -> (usize, usize, f64) {
     let pattern = Checkerboard::new(square, ORDER).unwrap().with_code_layout(layout);
     let period = 3 * pattern.code().len() as i64;
-    let backend = CpuBackend::new();
-    let buffer = BufferLayout::packed(SIZE, SIZE);
-
-    let (mut correct, mut checks) = (0usize, 0f64);
     let all = poses();
-    for (index, pose) in all.iter().enumerate() {
-        let mut image = pattern.render(SIZE, SIZE, pose).as_slice().to_vec();
-        // Seed from the condition only, never the layout: both see the same noise.
-        degrade(&mut image, kind, level, 0x5eed ^ (index as u64) << 8 ^ (level.to_bits() >> 40));
+    let chunk = all.len().div_ceil(threads());
 
-        let complex: Vec<Complex32> =
-            image.iter().map(|&v| Complex32::new(v, 0.0)).collect();
-        let Ok(detection) = analyze_two(&backend, &complex, buffer, 4.0, 10, 0, 0.0) else {
-            continue;
-        };
-        let Ok(code) = extract_code_with_layout(&detection, &image, ORDER, layout) else {
-            continue;
-        };
-        let (want_i, want_j) = expected_square(pose, square);
-        let hit = (code.centre_square.0 - want_i).rem_euclid(period) == 0
-            && (code.centre_square.1 - want_j).rem_euclid(period) == 0;
-        if hit {
-            correct += 1;
-            checks += code.check_bits as f64;
-        }
-    }
+    let per_thread: Vec<(usize, f64)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = all
+            .chunks(chunk)
+            .enumerate()
+            .map(|(c, slice)| {
+                let pattern = &pattern;
+                scope.spawn(move || {
+                    let backend = CpuBackend::new();
+                    let buffer = BufferLayout::packed(SIZE, SIZE);
+                    let (mut correct, mut checks) = (0usize, 0f64);
+                    for (offset, pose) in slice.iter().enumerate() {
+                        let index = c * chunk + offset;
+                        let mut image = pattern.render(SIZE, SIZE, pose).as_slice().to_vec();
+                        // Seed from the condition only, never the layout: both
+                        // layouts see the same noise.
+                        degrade(
+                            &mut image,
+                            kind,
+                            level,
+                            0x5eed ^ ((index as u64) << 8) ^ (level.to_bits() >> 40),
+                        );
+
+                        let complex: Vec<Complex32> =
+                            image.iter().map(|&v| Complex32::new(v, 0.0)).collect();
+                        let Ok(detection) =
+                            analyze_two(&backend, &complex, buffer, 4.0, 10, 0, 0.0)
+                        else {
+                            continue;
+                        };
+                        let Ok(code) = extract_code_with_layout(&detection, &image, ORDER, layout)
+                        else {
+                            continue;
+                        };
+                        let (want_i, want_j) = expected_square(pose, square);
+                        if (code.centre_square.0 - want_i).rem_euclid(period) == 0
+                            && (code.centre_square.1 - want_j).rem_euclid(period) == 0
+                        {
+                            correct += 1;
+                            checks += code.check_bits as f64;
+                        }
+                    }
+                    (correct, checks)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("worker panicked")).collect()
+    });
+
+    let correct: usize = per_thread.iter().map(|r| r.0).sum();
+    let checks: f64 = per_thread.iter().map(|r| r.1).sum();
     let mean = if correct > 0 { checks / correct as f64 } else { 0.0 };
     (correct, all.len(), mean)
 }

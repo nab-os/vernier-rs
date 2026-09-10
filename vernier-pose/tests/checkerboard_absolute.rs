@@ -243,3 +243,29 @@ fn diagonal_layout_recovers_sub_square_position() {
          being combined with the diagonal code correctly"
     );
 }
+
+#[test]
+fn diagonal_layout_decodes_random_poses() {
+    // The fixed pose sets above all happened to give an even `Δu + Δv` before
+    // lifting, so they missed a decoder that rejected odd sums outright. That
+    // parity is only defined modulo an odd code period, and rejecting on it
+    // discarded the correct hypothesis about half the time. Random poses
+    // exercise both parities; with a 50% per-pose failure, 24 of them would
+    // all pass by chance with probability 2^-24.
+    let pattern = diagonal();
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut unit = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((state >> 32) as f64 + 0.5) / (u32::MAX as f64 + 1.0)
+    };
+    for _ in 0..24 {
+        let pose = PatternPose::new(
+            (unit() - 0.5) * 4000.0,
+            (unit() - 0.5) * 4000.0,
+            (unit() - 0.5) * 1.26,
+        );
+        assert_decodes_to_pose(&pattern, pose);
+    }
+}
