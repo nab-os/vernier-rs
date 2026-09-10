@@ -24,7 +24,24 @@ use vernier_spectral::spectrum::analyze_two;
 
 const SIZE: usize = 512;
 const ORDER: u32 = 8;
-const POSES: usize = 8;
+const POSES: usize = 100;
+
+/// Deterministic generator, so a rerun reproduces the table exactly.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next_u32(&mut self) -> u32 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        // The top 32 bits. `>> 33` kept only 31, which pinned `unit()` to
+        // [0, 0.5): every pose landed at negative x, y and theta, and the
+        // Box-Muller noise was biased.
+        (self.0 >> 32) as u32
+    }
+
+    fn unit(&mut self) -> f64 {
+        (self.next_u32() as f64 + 0.5) / (u32::MAX as f64 + 1.0)
+    }
+}
 
 /// Matched range and bits in view, as in the second `layout_robustness` config.
 const SQUARE_AXES: f64 = 8.0;
@@ -54,51 +71,81 @@ fn ramp(image: &mut [f32], degrees: f64, level: f64) {
     }
 }
 
+/// Poses drawn from a fixed-seed generator: translations uniform over +/-2000 px
+/// (hundreds of squares, never on a square boundary by construction) and
+/// orientations uniform over +/-36 degrees, the same spread as the original
+/// 8-pose set. Seeded, so both layouts -- and every rerun -- see the same set.
 fn poses() -> Vec<PatternPose> {
+    let mut rng = Lcg(0x9e37_79b9_7f4a_7c15);
     (0..POSES)
-        .map(|s| {
-            let s = s as f64;
-            PatternPose::new(s * 137.0 + 3.3, s * -83.0 - 5.7, (s - 3.5) * 0.18)
+        .map(|_| {
+            let x = (rng.unit() - 0.5) * 4000.0;
+            let y = (rng.unit() - 0.5) * 4000.0;
+            let theta = (rng.unit() - 0.5) * 2.0 * 0.63;
+            PatternPose::new(x, y, theta)
         })
         .collect()
 }
 
+/// Worker threads: one per core. Each decode is independent, so the sweep scales
+/// almost linearly -- 100 poses per cell is otherwise an hour of wall time.
+fn threads() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+}
+
+
 fn evaluate(layout: CodeLayout, square: f64, degrees: f64, level: f64) -> (usize, usize) {
     let pattern = Checkerboard::new(square, ORDER).unwrap().with_code_layout(layout);
     let period = 3 * pattern.code().len() as i64;
-    let backend = CpuBackend::new();
-    let buffer = BufferLayout::packed(SIZE, SIZE);
-
-    let mut correct = 0usize;
     let all = poses();
-    for pose in &all {
-        let mut image = pattern.render(SIZE, SIZE, pose).as_slice().to_vec();
-        ramp(&mut image, degrees, level);
+    let chunk = all.len().div_ceil(threads());
 
-        let complex: Vec<Complex32> = image.iter().map(|&v| Complex32::new(v, 0.0)).collect();
-        let Ok(detection) = analyze_two(&backend, &complex, buffer, 4.0, 10, 0, 0.0) else {
-            continue;
-        };
-        let Ok(code) = extract_code_with_layout(&detection, &image, ORDER, layout) else {
-            continue;
-        };
-        let want = (
-            (-pose.x / square - 0.5).round() as i64,
-            (-pose.y / square - 0.5).round() as i64,
-        );
-        if (code.centre_square.0 - want.0).rem_euclid(period) == 0
-            && (code.centre_square.1 - want.1).rem_euclid(period) == 0
-        {
-            correct += 1;
-        }
-    }
+    let correct: usize = std::thread::scope(|scope| {
+        let handles: Vec<_> = all
+            .chunks(chunk)
+            .map(|slice| {
+                let pattern = &pattern;
+                scope.spawn(move || {
+                    let backend = CpuBackend::new();
+                    let buffer = BufferLayout::packed(SIZE, SIZE);
+                    let mut correct = 0usize;
+                    for pose in slice {
+                        let mut image = pattern.render(SIZE, SIZE, pose).as_slice().to_vec();
+                        ramp(&mut image, degrees, level);
+                        let complex: Vec<Complex32> =
+                            image.iter().map(|&v| Complex32::new(v, 0.0)).collect();
+                        let Ok(detection) =
+                            analyze_two(&backend, &complex, buffer, 4.0, 10, 0, 0.0)
+                        else {
+                            continue;
+                        };
+                        let Ok(code) = extract_code_with_layout(&detection, &image, ORDER, layout)
+                        else {
+                            continue;
+                        };
+                        let want = (
+                            (-pose.x / square - 0.5).round() as i64,
+                            (-pose.y / square - 0.5).round() as i64,
+                        );
+                        if (code.centre_square.0 - want.0).rem_euclid(period) == 0
+                            && (code.centre_square.1 - want.1).rem_euclid(period) == 0
+                        {
+                            correct += 1;
+                        }
+                    }
+                    correct
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("worker panicked")).sum()
+    });
     (correct, all.len())
 }
 
 fn main() {
     println!("Illumination ramp vs its direction. Matched range and bits in view:");
     println!("  lattice axes square {SQUARE_AXES:.2} px, diagonals square {SQUARE_DIAG:.2} px");
-    println!("  {POSES} poses per cell (theta spread +/-36 deg), correct decodes / total\n");
+    println!("  {POSES} poses per cell (theta uniform over +/-36 deg), correct decodes / total\n");
 
     println!(
         "  {:>6}  {:>10}  {:>14}  {:>12}",

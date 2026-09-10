@@ -507,15 +507,25 @@ fn try_origin(
     let delta_b = (CELL * k_y + site_b.1) - (CELL * y_first_cell + b_residue.1);
 
     // Back into `(i, j)`. A real frame offset is an integer translation of the
-    // square lattice, so in `(u, v)` it always has `Δu + Δv = 2Δi` — an odd sum
-    // names no lattice translation at all, and rejecting it prunes hypotheses
-    // that could otherwise score check bits by coincidence.
+    // square lattice, so in `(u, v)` it always has `Δu + Δv = 2Δi` — even.
+    //
+    // But `delta_a` and `delta_b` come from LFSR positions, so they are only
+    // known modulo one code period `P = 3·(2ⁿ−1)`, and `P` is odd: the true
+    // `Δu` may be `delta_a + P`, with the opposite parity. An odd sum therefore
+    // does not mean a wrong hypothesis — rejecting it discarded the correct one
+    // about half the time, which is what 100 random poses exposed and 8 fixed
+    // ones did not. Lift instead: adding `P` to `delta_b` restores the parity,
+    // and the two possible lifts differ by exactly `P` in `(i, j)`, which the
+    // wrap below removes, so the answer modulo `P` is unique.
     let (delta_i, delta_j) = match layout {
         CodeLayout::LatticeAxes => (delta_a, delta_b),
         CodeLayout::Diagonals => {
-            if (delta_a + delta_b).rem_euclid(2) != 0 {
-                return None;
-            }
+            let period = CELL * lfsr.len() as i64;
+            let delta_b = if (delta_a + delta_b).rem_euclid(2) != 0 {
+                delta_b + period
+            } else {
+                delta_b
+            };
             ((delta_a + delta_b) / 2, (delta_a - delta_b) / 2)
         }
     };
