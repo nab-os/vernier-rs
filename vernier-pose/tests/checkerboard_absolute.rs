@@ -13,7 +13,8 @@ use vernier_cpu::CpuBackend;
 use vernier_patterns::PatternPose;
 use vernier_patterns::checkerboard::{Checkerboard, CodeLayout};
 use vernier_pose::checkerboard::{
-    extract_code, extract_code_with_layout, solve_checkerboard, solve_checkerboard_with_layout,
+    CheckerboardError, detect_checkerboard, extract_code, extract_code_with_layout,
+    solve_checkerboard, solve_checkerboard_with_layout,
 };
 use vernier_spectral::spectrum::{Detection, analyze_two};
 
@@ -22,6 +23,14 @@ const SQUARE: f64 = 8.0;
 const ORDER: u32 = 8;
 
 fn detect(image: &vernier_core::GrayImage) -> Detection {
+    let backend = CpuBackend::new();
+    let layout = BufferLayout::packed(SIZE, SIZE);
+    detect_checkerboard(&backend, image.as_slice(), layout, 4.0, 10, 0, 0.0).expect("two carrier peaks")
+}
+
+/// Unguarded detection, to check that the decoder refuses what the plain peak
+/// search can hand it.
+fn detect_unguarded(image: &vernier_core::GrayImage) -> Detection {
     let backend = CpuBackend::new();
     let layout = BufferLayout::packed(SIZE, SIZE);
     let complex: Vec<Complex32> = image
@@ -267,5 +276,57 @@ fn diagonal_layout_decodes_random_poses() {
             (unit() - 0.5) * 1.26,
         );
         assert_decodes_to_pose(&pattern, pose);
+    }
+}
+
+// --- carrier locked onto the code's one-third line ---------------------------
+//
+// Five of 100 random clean poses once failed: the peak search took the line
+// the code puts at one third of each carrier for the carrier itself. One of
+// them decoded to a wrong position with no error. These are those poses.
+
+fn random_poses() -> Vec<PatternPose> {
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut unit = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((state >> 32) as f64 + 0.5) / (u32::MAX as f64 + 1.0)
+    };
+    (0..100)
+        .map(|_| {
+            let x = (unit() - 0.5) * 4000.0;
+            let y = (unit() - 0.5) * 4000.0;
+            let theta = (unit() - 0.5) * 2.0 * 0.63;
+            PatternPose::new(x, y, theta)
+        })
+        .collect()
+}
+
+const SUBHARMONIC_POSES: [usize; 5] = [1, 27, 38, 52, 97];
+
+#[test]
+fn guarded_detection_decodes_poses_that_lock_onto_the_code_line() {
+    let poses = random_poses();
+    for layout in [CodeLayout::LatticeAxes, CodeLayout::Diagonals] {
+        let pattern = Checkerboard::new(SQUARE, ORDER).unwrap().with_code_layout(layout);
+        for &index in &SUBHARMONIC_POSES {
+            assert_decodes_to_pose(&pattern, poses[index]);
+        }
+    }
+}
+
+#[test]
+fn decoder_refuses_a_lock_onto_the_code_line() {
+    let poses = random_poses();
+    let pattern = Checkerboard::new(SQUARE, ORDER).unwrap();
+    // Pose 97 used to decode, confidently, to the wrong square.
+    for &index in &[1usize, 97] {
+        let image = pattern.render(SIZE, SIZE, &poses[index]);
+        let detection = detect_unguarded(&image);
+        match extract_code(&detection, image.as_slice(), ORDER) {
+            Err(CheckerboardError::SubharmonicLock) => {}
+            other => panic!("pose {index}: expected SubharmonicLock, got {other:?}"),
+        }
     }
 }
