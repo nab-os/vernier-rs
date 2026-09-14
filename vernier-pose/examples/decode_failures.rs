@@ -6,13 +6,11 @@
 //!
 //! Run with `cargo run --release --example decode_failures -p vernier-pose`.
 
-use vernier_core::Complex32;
 use vernier_core::buffer::BufferLayout;
 use vernier_cpu::CpuBackend;
 use vernier_patterns::PatternPose;
 use vernier_patterns::checkerboard::{Checkerboard, CodeLayout};
-use vernier_pose::checkerboard::extract_code_with_layout;
-use vernier_spectral::spectrum::analyze_two;
+use vernier_pose::checkerboard::{detect_checkerboard, extract_code_with_layout};
 
 const SIZE: usize = 512;
 const ORDER: u32 = 8;
@@ -59,10 +57,9 @@ fn run(pattern: &Checkerboard, square: f64, pose: &PatternPose) -> Outcome {
     let layout = pattern.code_layout();
     let period = 3 * pattern.code().len() as i64;
     let image = pattern.render(SIZE, SIZE, pose);
-    let complex: Vec<Complex32> = image.as_slice().iter().map(|&v| Complex32::new(v, 0.0)).collect();
     let backend = CpuBackend::new();
     let Ok(detection) =
-        analyze_two(&backend, &complex, BufferLayout::packed(SIZE, SIZE), 4.0, 10, 0, 0.0)
+        detect_checkerboard(&backend, image.as_slice(), BufferLayout::packed(SIZE, SIZE), 4.0, 10, 0, 0.0)
     else {
         return Outcome::DetectFailed;
     };
