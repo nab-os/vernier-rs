@@ -1,0 +1,76 @@
+# vernier-webapp
+
+A browser front-end for `vernier-patterns`, built with [Dioxus](https://dioxuslabs.com).
+Pick a generator, tune every parameter it exposes, and see the render update
+live.
+
+The patterns are produced by `vernier-patterns` itself, compiled to
+WebAssembly — the same code the CLI and the round-trip tests call. This crate
+only wraps the parameters in widgets and blits the resulting intensity field
+onto a `<canvas>`, so what the page shows is what the library generates.
+
+## Running it
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install dioxus-cli@0.7.10 --locked   # provides `dx`
+
+cd vernier-webapp
+dx serve                                   # http://localhost:8080
+```
+
+`dx bundle --release` produces a static directory that can be served from
+anywhere; there is no server side.
+
+## What you can set
+
+| Section | Parameters |
+| --- | --- |
+| Pattern type | Periodic, Megarena, Stamp, QR-like |
+| Image | width, height (16–2048 px), plus 256/512/1024/2048 presets |
+| Periodic | spatial period (px) |
+| Megarena | dot period (px), LFSR order (4–12 bits), LFSR offset |
+| Stamp | tile size (px) |
+| QR-like | modules per axis, module size (px) |
+| Pose | X translation, Y translation, orientation (degrees, shown in radians too) |
+| Display | invert, actual size vs. scale-to-fit |
+
+Sliders commit continuously so a parameter can be swept while watching the
+pattern move; the number box beside each one commits on blur or Enter for an
+exact value. **Download PNG** saves the render at full resolution regardless of
+the preview scale, and the *Equivalent vernier-patterns call* panel prints the
+Rust that reproduces the current settings, so a parameter set found here can be
+pasted straight into a test.
+
+Alongside the preview, the readouts show what the parameters work out to — for
+Megarena, the code length (`2^order − 1`) and the absolute range in pixels
+(`code_length × 3 × period`, three periods per bit).
+
+## Stubs
+
+`Stamp` and `QrLike` render a blank field: `vernier-patterns` fixes their
+interfaces but leaves the layouts unimplemented, deliberately, rather than
+guessing at an encoding. Their controls are wired to the real constructor
+parameters, and the UI says so on screen instead of showing an unexplained black
+square. When `vernier-patterns/src/stamp.rs` and `src/qrcode.rs` gain their
+rasterizers, this app picks them up with no change here.
+
+## Layout
+
+| File | Contents |
+| --- | --- |
+| `src/pattern.rs` | the parameter model and its mapping onto `vernier-patterns` calls |
+| `src/canvas.rs` | canvas painting and PNG download |
+| `src/controls.rs` | the slider/number, toggle and section widgets |
+| `src/main.rs` | the app shell and the per-generator field lists |
+
+Adding a parameter means a field on `PatternSettings`, an arm in
+`PatternSettings::render`, and a `NumberField` in `pattern_fields` — nothing
+else is wired per-parameter.
+
+## Why it is its own workspace
+
+`vernier-webapp/Cargo.toml` carries an empty `[workspace]` table, so it is not a
+member of the root workspace. The root workspace builds for the host and this
+crate only makes sense on `wasm32`; keeping it separate means `cargo build` at
+the repo root never has to compile a web renderer it cannot run.
