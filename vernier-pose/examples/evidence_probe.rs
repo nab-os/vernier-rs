@@ -1,18 +1,8 @@
-//! Example images for every test in `diamond_vs_square`.
+//! Evidence probe: for every decode, how strong was the evidence, and was it
+//! right? Used to choose the decoder's false-accept limit.
 //!
-//! Renders pose #0 of the +/-5 deg run for both designs and applies each
-//! degradation at five levels across its tested range, using the suite's own
-//! degradation code and seeds -- so each image is exactly one the decoder was
-//! given. Also renders the tile-size sweep. Each image is decoded, and the
-//! outcome recorded, so a picture can be tied to its result.
-//!
-//! Writes 8-bit PGM files plus manifest.csv into the directory given as the
-//! first argument.
-//!
-//! Run with
-//!   cargo run --release --example degradation_examples -p vernier-pose -- <out-dir>
-
-use std::io::Write;
+//! CSV on stdout: design,variant,level,tile,outcome,false_accept,errors_x,errors_y,check_bits,offset_i,offset_j,err_px,runner_up_fa
+#![allow(dead_code)]
 
 use vernier_core::buffer::BufferLayout;
 use vernier_cpu::CpuBackend;
@@ -22,6 +12,7 @@ use vernier_pose::checkerboard::{detect_checkerboard, solve_checkerboard_with_la
 
 const SIZE: usize = 512;
 const ORDER: u32 = 8;
+const POSES: usize = 100;
 
 // ------------------------------------------------------------------ randomness
 
@@ -253,93 +244,99 @@ fn degrade(image: &mut [f32], variant: Variant, level: f64, seed: u64) {
     }
 }
 
-// ------------------------------------------------------------------ examples
+// ------------------------------------------------------------------ probe
 
-/// Pose #0 of `diamond_vs_square`'s offsets at +/-5 deg jitter.
-fn pose_offset() -> (f64, f64, f64) {
+fn offsets() -> Vec<(f64, f64, f64)> {
     let mut rng = Lcg(0x9e37_79b9_7f4a_7c15);
-    let x = (rng.unit() - 0.5) * 4000.0;
-    let y = (rng.unit() - 0.5) * 4000.0;
-    let d = (rng.unit() - 0.5) * 2.0 * 5f64.to_radians();
-    (x, y, d)
-}
-
-fn write_pgm(path: &std::path::Path, image: &[f32]) {
-    let mut file = std::fs::File::create(path).expect("create pgm");
-    write!(file, "P5\n{SIZE} {SIZE}\n255\n").unwrap();
-    let bytes: Vec<u8> = image.iter().map(|&v| (v.clamp(0.0, 1.0) * 255.0).round() as u8).collect();
-    file.write_all(&bytes).unwrap();
-}
-
-fn decodes(image: &[f32], pattern: &Checkerboard, square: f64, pose: &PatternPose) -> bool {
-    let backend = CpuBackend::new();
-    let Ok(detection) =
-        detect_checkerboard(&backend, image, BufferLayout::packed(SIZE, SIZE), 4.0, 10, 0, 0.0)
-    else {
-        return false;
-    };
-    let Ok((recovered, _)) =
-        solve_checkerboard_with_layout(&detection, image, square, ORDER, pattern.code_layout())
-    else {
-        return false;
-    };
-    // Within half a square of the truth, modulo one code period.
-    let period_px = (3 * pattern.code().len()) as f64 * square;
-    let wrap = |e: f64| {
-        let e = e.rem_euclid(period_px);
-        e.min(period_px - e)
-    };
-    wrap(recovered.x + pose.x) < 0.5 * square && wrap(recovered.y + pose.y) < 0.5 * square
-}
-
-fn slug(s: &str) -> String {
-    s.replace(' ', "-")
+    (0..POSES)
+        .map(|_| {
+            let x = (rng.unit() - 0.5) * 4000.0;
+            let y = (rng.unit() - 0.5) * 4000.0;
+            let d = (rng.unit() - 0.5) * 2.0 * 5f64.to_radians();
+            (x, y, d)
+        })
+        .collect()
 }
 
 fn main() {
-    let out = std::path::PathBuf::from(std::env::args().nth(1).expect("output directory"));
-    std::fs::create_dir_all(&out).unwrap();
-    let mut manifest = std::fs::File::create(out.join("manifest.csv")).unwrap();
-    writeln!(manifest, "family,variant,level,design,file,decoded").unwrap();
+    // (variant, level, tile). Tile sweeps use a clean image (level ignored).
+    let mut conditions: Vec<(Option<Variant>, f64, f64)> = vec![(None, 0.0, 8.0)];
+    for (v, levels) in [
+        (Variant::Ramp, vec![0.6, 1.0, 1.2]),
+        (Variant::Vignette, vec![0.8, 1.0]),
+        (Variant::Defocus, vec![1.5, 2.0, 2.5, 3.0, 3.5, 4.0]),
+        (Variant::Motion0, vec![6.0, 8.0, 10.0, 12.0, 16.0, 22.0]),
+        (Variant::Motion45, vec![8.0, 10.0, 12.0, 16.0, 22.0]),
+        (Variant::Gaussian, vec![1.0, 1.6, 2.0]),
+        (Variant::Shot, vec![1.0]),
+        (Variant::SaltPepper, vec![0.5]),
+    ] {
+        for l in levels {
+            conditions.push((Some(v), l, 8.0));
+        }
+    }
+    for tile in [4.0, 3.0, 2.5, 2.0] {
+        conditions.push((None, 0.0, tile));
+    }
 
-    let (x, y, d) = pose_offset();
-    let designs = [
-        ("square", CodeLayout::LatticeAxes, 0.0),
-        ("diamond", CodeLayout::Diagonals, std::f64::consts::FRAC_PI_4),
-    ];
-
-    for (name, layout, nominal) in designs {
-        let pose = PatternPose::new(x, y, nominal + d);
-        let pattern = Checkerboard::new(8.0, ORDER).unwrap().with_code_layout(layout);
-        let clean = pattern.render(SIZE, SIZE, &pose).as_slice().to_vec();
-
-        for variant in ALL {
-            let levels = variant.levels();
-            let n = levels.len() - 1;
-            let mut picks = vec![0, n / 4, n / 2, 3 * n / 4, n];
-            picks.dedup();
-            for i in picks {
-                let level = levels[i];
-                let mut image = clean.clone();
-                // Same seed as the suite for pose index 0.
-                let seed = (variant.id() << 56) ^ (level.to_bits() >> 8);
-                degrade(&mut image, variant, level, seed);
-                let file = format!("{name}_{}_{level}.pgm", slug(variant.name()));
-                write_pgm(&out.join(&file), &image);
-                let ok = decodes(&image, &pattern, 8.0, &pose);
-                writeln!(manifest, "{},{},{level},{name},{file},{ok}", variant.family(), variant.name())
-                    .unwrap();
+    let offs = offsets();
+    println!("design,variant,level,tile,outcome,false_accept,errors_x,errors_y,check_bits,offset_i,offset_j,err_px,runner_up_fa");
+    for (variant, level, tile) in conditions {
+        for (name, layout, nominal) in [
+            ("square", CodeLayout::LatticeAxes, 0.0),
+            ("diamond", CodeLayout::Diagonals, std::f64::consts::FRAC_PI_4),
+        ] {
+            let pattern = Checkerboard::new(tile, ORDER).unwrap().with_code_layout(layout);
+            let period = 3 * pattern.code().len() as i64;
+            let period_px = period as f64 * tile;
+            let rows: Vec<String> = std::thread::scope(|scope| {
+                let handles: Vec<_> = offs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &(x, y, d))| {
+                        let pattern = &pattern;
+                        scope.spawn(move || {
+                            let pose = PatternPose::new(x, y, nominal + d);
+                            let mut image = pattern.render(SIZE, SIZE, &pose).as_slice().to_vec();
+                            if let Some(v) = variant {
+                                let seed = (v.id() << 56) ^ (level.to_bits() >> 8) ^ index as u64;
+                                degrade(&mut image, v, level, seed);
+                            }
+                            let label = variant.map(|v| v.name()).unwrap_or("clean");
+                            let backend = CpuBackend::new();
+                            let prefix = format!("{name},{label},{level},{tile}");
+                            let Ok(det) = detect_checkerboard(&backend, &image, BufferLayout::packed(SIZE, SIZE), 4.0, 10, 0, 0.0) else {
+                                return format!("{prefix},nodetect,,,,,,,,");
+                            };
+                            let Ok((rec, code)) = solve_checkerboard_with_layout(&det, &image, tile, ORDER, layout) else {
+                                return format!("{prefix},nodecode,,,,,,,,");
+                            };
+                            let want = ((-pose.x / tile - 0.5).round() as i64, (-pose.y / tile - 0.5).round() as i64);
+                            let signed = |v: i64| {
+                                let v = v.rem_euclid(period);
+                                if v > period / 2 { v - period } else { v }
+                            };
+                            let (oi, oj) = (signed(code.centre_square.0 - want.0), signed(code.centre_square.1 - want.1));
+                            let wrap = |e: f64| {
+                                let e = e.rem_euclid(period_px);
+                                e.min(period_px - e)
+                            };
+                            let (ex, ey) = (wrap(rec.x + pose.x), wrap(rec.y + pose.y));
+                            let outcome = if oi == 0 && oj == 0 { "correct" } else { "wrong" };
+                            format!(
+                                "{prefix},{outcome},{:e},{},{},{},{oi},{oj},{:.4},{:e}",
+                                code.false_accept, code.bit_errors.0, code.bit_errors.1, code.check_bits,
+                                (ex * ex + ey * ey).sqrt(), code.runner_up_false_accept
+                            )
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            for r in rows {
+                println!("{r}");
             }
         }
-
-        for tile in [8.0, 4.0, 3.0, 2.5, 2.0, 1.5] {
-            let small = Checkerboard::new(tile, ORDER).unwrap().with_code_layout(layout);
-            let image = small.render(SIZE, SIZE, &pose).as_slice().to_vec();
-            let file = format!("{name}_tile-size_{tile}.pgm");
-            write_pgm(&out.join(&file), &image);
-            let ok = decodes(&image, &small, tile, &pose);
-            writeln!(manifest, "resolution,tile size,{tile},{name},{file},{ok}").unwrap();
-        }
-        eprintln!("{name} done");
+        eprintln!("done {:?} {level} tile {tile}", variant.map(|v| v.name()));
     }
 }

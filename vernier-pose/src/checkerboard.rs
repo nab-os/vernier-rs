@@ -140,9 +140,19 @@ pub struct CheckerboardCode {
     pub x_window: Vec<u8>,
     /// The y-direction window.
     pub y_window: Vec<u8>,
-    /// Spare bits that agreed with the located sequence — the evidence the
-    /// hypothesis is the right one.
+    /// Spare bits read beyond the `order` used to locate each window, both codes
+    /// together.
     pub check_bits: usize,
+    /// Spare bits that disagreed with the located sequence, per code.
+    pub bit_errors: (usize, usize),
+    /// Chance that a wrong placement would have matched the sequence this well
+    /// by luck, both codes together and over every hypothesis tried. The
+    /// evidence the decode rests on: small is strong.
+    pub false_accept: Real,
+    /// [`false_accept`](Self::false_accept) of the strongest hypothesis that
+    /// puts the image centre on a *different* square, or infinity if none
+    /// localized. When this is credible too, the position is ambiguous.
+    pub runner_up_false_accept: Real,
 }
 
 /// Coarse decoder over an already-extracted [`CheckerboardCode`], for the shared
@@ -184,6 +194,15 @@ pub enum CheckerboardError {
     /// worst return a confident wrong position. [`detect_checkerboard`] retries
     /// such a detection automatically.
     SubharmonicLock,
+    /// The best hypothesis matched the code no better than a wrong placement
+    /// would by chance ([`MAX_FALSE_ACCEPT`]). Returning it would report a
+    /// position with no real evidence behind it.
+    WeakEvidence,
+    /// A second hypothesis, placing the image centre on a different square, was
+    /// also credible. Heavy motion blur does this: it smears each coding site
+    /// into its neighbour along the blur, so the code reads almost as well one
+    /// square over. Picking one would be a guess.
+    AmbiguousPosition,
 }
 
 impl std::fmt::Display for CheckerboardError {
@@ -201,6 +220,12 @@ impl std::fmt::Display for CheckerboardError {
                     f,
                     "no orientation hypothesis reproduced the coding geometry"
                 )
+            }
+            Self::AmbiguousPosition => {
+                write!(f, "two different positions matched the code about equally well")
+            }
+            Self::WeakEvidence => {
+                write!(f, "the code was not read with enough evidence to trust a position")
             }
             Self::SubharmonicLock => {
                 write!(
@@ -286,29 +311,51 @@ pub fn extract_code_with_layout(
         (phase1 / PI - phase2 / PI) * 0.5,
     );
 
-    let mut best: Option<CheckerboardCode> = None;
-    for (transform_index, matrix) in TRANSFORMS.iter().enumerate() {
-        let Some(candidate) = try_transform(
-            &white,
-            centre_measured,
-            transform_index,
-            matrix,
-            layout,
-            &lfsr,
-            &index,
-            order,
-        ) else {
-            continue;
-        };
-        if best
-            .as_ref()
-            .is_none_or(|b| candidate.check_bits > b.check_bits)
-        {
-            best = Some(candidate);
+    let mut candidates: Vec<CheckerboardCode> = TRANSFORMS
+        .iter()
+        .enumerate()
+        .flat_map(|(transform_index, matrix)| {
+            try_transform(&white, centre_measured, transform_index, matrix, layout, &lfsr, &index, order)
+        })
+        .collect();
+    candidates.sort_by(|a, b| {
+        if stronger(a, b) {
+            std::cmp::Ordering::Less
+        } else if stronger(b, a) {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
         }
-    }
+    });
 
-    best.ok_or(CheckerboardError::NoConsistentHypothesis)
+    let mut ranked = candidates.into_iter();
+    let mut best = ranked.next().ok_or(CheckerboardError::NoConsistentHypothesis)?;
+    let centre = best.centre_square;
+    best.runner_up_false_accept = ranked
+        .find(|c| c.centre_square != centre)
+        .map_or(Real::INFINITY, |c| c.false_accept);
+
+    if best.false_accept > MAX_FALSE_ACCEPT {
+        return Err(CheckerboardError::WeakEvidence);
+    }
+    // Measured: among degraded decodes, a credible runner-up on another square
+    // accompanied 157 of 181 one-square-off results and 29 of 4,527 correct
+    // ones -- all 29 under motion blur long enough to make the code ambiguous.
+    if best.runner_up_false_accept <= MAX_FALSE_ACCEPT {
+        return Err(CheckerboardError::AmbiguousPosition);
+    }
+    Ok(best)
+}
+
+/// Whether `a` is better evidence than `b`: a smaller chance of passing by luck,
+/// then more check bits. Counting check bits alone ignored how many of them
+/// were wrong.
+fn stronger(a: &CheckerboardCode, b: &CheckerboardCode) -> bool {
+    match a.false_accept.total_cmp(&b.false_accept) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => a.check_bits > b.check_bits,
+    }
 }
 
 /// Pools pixel intensities into the square each one sits in, keyed by the square
@@ -652,7 +699,7 @@ fn try_transform(
     lfsr: &Lfsr,
     index: &WindowIndex,
     order: u32,
-) -> Option<CheckerboardCode> {
+) -> Vec<CheckerboardCode> {
     let map = build_defect_map(white, matrix);
 
     // A coded checkerboard defects about 1 square in 9. Far off that and this is
@@ -660,7 +707,7 @@ fn try_transform(
     let rate = map.squares.iter().filter(|&&(_, defect)| defect).count() as Real
         / map.squares.len() as Real;
     if !(0.02..0.30).contains(&rate) {
-        return None;
+        return Vec::new();
     }
 
     // The frame offset is only known modulo the supercell, so try all nine. Each
@@ -669,10 +716,10 @@ fn try_transform(
     // than looking for whichever positions defect most — survives the stretches
     // of the sequence that are almost all ones, where the coding sites are
     // indistinguishable from ordinary squares by defect rate alone.
-    let mut best: Option<CheckerboardCode> = None;
+    let mut candidates = Vec::new();
     for delta_i_residue in 0..CELL {
         for delta_j_residue in 0..CELL {
-            let candidate = try_origin(
+            candidates.extend(try_origin(
                 &map,
                 centre_measured,
                 transform_index,
@@ -682,17 +729,10 @@ fn try_transform(
                 lfsr,
                 index,
                 order,
-            );
-            if let Some(candidate) = candidate
-                && best
-                    .as_ref()
-                    .is_none_or(|b| candidate.check_bits > b.check_bits)
-            {
-                best = Some(candidate);
-            }
+            ));
         }
     }
-    best
+    candidates
 }
 
 /// Rotates the sampled squares into one candidate frame and marks the squares
@@ -760,8 +800,8 @@ fn try_origin(
 
     let (x_bits, x_first_cell) = read_site_bits(map, layout, a_residue, true)?;
     let (y_bits, y_first_cell) = read_site_bits(map, layout, b_residue, false)?;
-    let (k_x, x_checks) = localize(&x_bits, lfsr, index, order)?;
-    let (k_y, y_checks) = localize(&y_bits, lfsr, index, order)?;
+    let (k_x, x_checks, x_errors) = localize(&x_bits, lfsr, index, order)?;
+    let (k_y, y_checks, y_errors) = localize(&y_bits, lfsr, index, order)?;
 
     // The first read supercell of each axis is LFSR position k, so the pattern
     // index of its coding square is 3k + the site's offset in the supercell.
@@ -825,6 +865,9 @@ fn try_origin(
         x_window: x_bits[..order as usize].to_vec(),
         y_window: y_bits[..order as usize].to_vec(),
         check_bits: x_checks + y_checks,
+        bit_errors: (x_errors, y_errors),
+        runner_up_false_accept: Real::INFINITY,
+        false_accept: chance_by_luck(x_checks, x_errors) * chance_by_luck(y_checks, y_errors) * HYPOTHESES,
     })
 }
 
@@ -893,21 +936,40 @@ fn read_site_bits(
 /// stays at [`MAX_BIT_ERRORS`].
 fn allowed_bit_errors(bits: usize, order: usize) -> usize {
     let spare = bits.saturating_sub(order);
-    let anchors = (spare + 1) as Real;
-    let chance = (0.5 as Real).powi(spare as i32);
-    let (mut allowed, mut cumulative, mut choose) = (MAX_BIT_ERRORS, 0.0, 1.0);
+    let mut allowed = MAX_BIT_ERRORS;
     for errors in 0..=spare {
-        if errors > 0 {
-            choose *= (spare - errors + 1) as Real / errors as Real;
-        }
-        cumulative += choose;
-        if cumulative * chance * anchors > FALSE_ACCEPT_LIMIT {
+        if chance_by_luck(spare, errors) > FALSE_ACCEPT_LIMIT {
             break;
         }
         allowed = allowed.max(errors);
     }
     allowed
 }
+
+/// Chance that one code read at a *wrong* placement — whose `spare` check bits
+/// agree with the sequence at random — shows at most `errors` disagreements,
+/// over the `spare + 1` anchors `localize` tries. Capped at one.
+fn chance_by_luck(spare: usize, errors: usize) -> Real {
+    let (mut cumulative, mut choose) = (0.0, 1.0);
+    for k in 0..=errors.min(spare) {
+        if k > 0 {
+            choose *= (spare - k + 1) as Real / k as Real;
+        }
+        cumulative += choose;
+    }
+    (cumulative * (0.5 as Real).powi(spare as i32) * (spare + 1) as Real).min(1.0)
+}
+
+/// Largest [`CheckerboardCode::false_accept`] a decode may report.
+///
+/// Measured over 4,832 decodes of degraded images: every correct decode was at
+/// most 10^-2.2, while every decode that landed far from the truth was at
+/// 10^1.3 or above — no evidence at all, a short garbage read passing by chance
+/// under heavy blur. The limit sits between them with a wide margin both ways.
+const MAX_FALSE_ACCEPT: Real = 0.1;
+
+/// Hypotheses `extract_code` tries: four quarter-turns times nine frame offsets.
+const HYPOTHESES: Real = (TRANSFORMS.len() as i64 * CELL * CELL) as Real;
 
 /// Locates the bit run in the sequence and scores it against every spare bit.
 ///
@@ -917,7 +979,7 @@ fn allowed_bit_errors(bits: usize, order: usize) -> usize {
 /// best is kept only if it explains all but [`MAX_BIT_ERRORS`] of the bits.
 /// Returns the LFSR position of the run's first bit and the spare-bit count that
 /// backs it.
-fn localize(bits: &[u8], lfsr: &Lfsr, index: &WindowIndex, order: u32) -> Option<(i64, usize)> {
+fn localize(bits: &[u8], lfsr: &Lfsr, index: &WindowIndex, order: u32) -> Option<(i64, usize, usize)> {
     let order = order as usize;
     if bits.len() < order + MIN_SPARE_BITS {
         return None;
@@ -941,10 +1003,11 @@ fn localize(bits: &[u8], lfsr: &Lfsr, index: &WindowIndex, order: u32) -> Option
     }
 
     let (first, agreements) = best?;
-    if bits.len() - agreements > allowed_bit_errors(bits.len(), order) {
+    let errors = bits.len() - agreements;
+    if errors > allowed_bit_errors(bits.len(), order) {
         return None;
     }
-    Some((first, bits.len() - order))
+    Some((first, bits.len() - order, errors))
 }
 
 /// Absolute pose from a completed detection: the code fixes which square the
@@ -1049,6 +1112,20 @@ mod tests {
                 assert!((fast - slow).abs() <= 1e-9 * slow.max(1.0), "bin ({bx},{by}) step {step}: {fast} vs {slow}");
             }
         }
+    }
+
+    #[test]
+    fn short_garbage_reads_fail_the_evidence_gate_and_real_reads_pass() {
+        // What heavy defocus produced before the gate: ~15 bits per code, one
+        // error each -- a wrong placement matches that easily.
+        let garbage = chance_by_luck(7, 1) * chance_by_luck(7, 1) * HYPOTHESES;
+        assert!(garbage > MAX_FALSE_ACCEPT, "garbage read scored {garbage}");
+        // A typical clean read: ~26 bits per code, no errors.
+        let clean = chance_by_luck(18, 0) * chance_by_luck(18, 0) * HYPOTHESES;
+        assert!(clean < 1e-6, "clean read scored {clean}");
+        // One error on each code of a typical read is still strong evidence.
+        let noisy = chance_by_luck(18, 1) * chance_by_luck(18, 1) * HYPOTHESES;
+        assert!(noisy < MAX_FALSE_ACCEPT, "noisy read scored {noisy}");
     }
 
     #[test]

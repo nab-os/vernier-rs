@@ -362,8 +362,7 @@ fn evaluate(
     degradation: Option<(Variant, f64)>,
 ) -> Stats {
     let layout = pattern.code_layout();
-    let period = 3 * pattern.code().len() as i64;
-    let period_px = period as f64 * square;
+    let period_px = (3 * pattern.code().len()) as f64 * square;
     let chunk = poses.len().div_ceil(threads());
 
     let per_thread: Vec<(usize, usize, Vec<f64>, f64, usize)> = std::thread::scope(|scope| {
@@ -394,20 +393,17 @@ fn evaluate(
                         ) else {
                             continue;
                         };
-                        let want = (
-                            (-pose.x / square - 0.5).round() as i64,
-                            (-pose.y / square - 0.5).round() as i64,
-                        );
-                        if (code.centre_square.0 - want.0).rem_euclid(period) == 0
-                            && (code.centre_square.1 - want.1).rem_euclid(period) == 0
-                        {
+                        // Correct means within half a square of the truth. Comparing
+                        // square indices instead miscounts poses that sit on a square
+                        // boundary, where a sub-pixel difference flips the rounding.
+                        let wrap = |e: f64| {
+                            let e = e.rem_euclid(period_px);
+                            e.min(period_px - e)
+                        };
+                        let (ex, ey) = (wrap(recovered.x + pose.x), wrap(recovered.y + pose.y));
+                        if ex < 0.5 * square && ey < 0.5 * square {
                             correct += 1;
                             bits += code.check_bits as f64;
-                            let wrap = |e: f64| {
-                                let e = e.rem_euclid(period_px);
-                                e.min(period_px - e)
-                            };
-                            let (ex, ey) = (wrap(recovered.x + pose.x), wrap(recovered.y + pose.y));
                             errs.push((ex * ex + ey * ey).sqrt());
                         } else {
                             wrong += 1;
