@@ -14,7 +14,9 @@ pub struct TopLevel {
 #[argh(subcommand)]
 pub enum Command {
     Bench(BenchArgs),
+    CheckerboardFigures(CheckerboardFiguresArgs),
     DetectMegarena(DetectMegarenaArgs),
+    RenderCheckerboard(RenderCheckerboardArgs),
     RenderMegarena(RenderMegarenaArgs),
     RoundtripMegarena(RoundtripMegarenaArgs),
 }
@@ -195,4 +197,71 @@ pub struct RoundtripMegarenaArgs {
     /// camera pixel size in µm/pixel, used when --render-gpu is set (default: 1.0)
     #[argh(option, default = "1.0")]
     pub pixel_size: f64,
+}
+
+/// Render a coded checkerboard pattern at given coordinates and save it as PNG.
+#[derive(FromArgs)]
+#[argh(subcommand, name = "render-checkerboard")]
+pub struct RenderCheckerboardArgs {
+    /// output PNG file path
+    #[argh(option)]
+    pub output: String,
+
+    /// image width in pixels (default: 512)
+    #[argh(option, default = "512")]
+    pub width: usize,
+
+    /// image height in pixels (default: 512)
+    #[argh(option, default = "512")]
+    pub height: usize,
+
+    /// pattern X offset in pixels (default: 0.0)
+    #[argh(option, default = "0.0")]
+    pub x: f64,
+
+    /// pattern Y offset in pixels (default: 0.0)
+    #[argh(option, default = "0.0")]
+    pub y: f64,
+
+    /// pattern orientation in radians (default: 0.0)
+    #[argh(option, default = "0.0")]
+    pub theta: f64,
+
+    /// checkerboard square side in pixels; the carrier period is this times
+    /// sqrt(2) (default: 12.0)
+    #[argh(option, default = "12.0")]
+    pub square: f64,
+
+    /// LFSR code size in bits, 4..=12 (default: 8)
+    #[argh(option, default = "8")]
+    pub code_size: u32,
+
+    /// render the uncoded checkerboard instead (the carrier with no code)
+    #[argh(switch)]
+    pub plain: bool,
+}
+
+/// Generate the explainer figures and measurements for the coded checkerboard.
+#[derive(FromArgs)]
+#[argh(subcommand, name = "checkerboard-figures")]
+pub struct CheckerboardFiguresArgs {
+    /// directory the PNGs are written to
+    #[argh(option)]
+    pub out_dir: String,
+
+    /// checkerboard square side in pixels (default: 8.0)
+    #[argh(option, default = "8.0")]
+    pub square: f64,
+
+    /// LFSR code size in bits, 4..=12 (default: 8)
+    #[argh(option, default = "8")]
+    pub code_size: u32,
+
+    /// side of the square figures in pixels (default: 512)
+    #[argh(option, default = "512")]
+    pub size: usize,
+
+    /// number of poses used for the phase-bias measurement (default: 24)
+    #[argh(option, default = "24")]
+    pub poses: usize,
 }

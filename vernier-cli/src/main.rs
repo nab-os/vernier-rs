@@ -16,7 +16,9 @@ mod pgm;
 use args::{Command, TopLevel};
 use backend_select::{BackendKind, dispatch};
 use commands::benchmark::Benchmark;
+use commands::checkerboard_figures;
 use commands::detect_megarena::DetectMegarena;
+use commands::render_checkerboard;
 use commands::render_megarena;
 use commands::roundtrip_megarena::RoundtripMegarena;
 
@@ -26,7 +28,11 @@ fn main() {
     match top.command {
         Command::Bench(a) => {
             let Some(kind) = BackendKind::parse(&a.backend) else {
-                eprintln!("unknown backend '{}'. try: {}", a.backend, BackendKind::hint());
+                eprintln!(
+                    "unknown backend '{}'. try: {}",
+                    a.backend,
+                    BackendKind::hint()
+                );
                 std::process::exit(2);
             };
             let task = Benchmark {
@@ -65,6 +71,36 @@ fn main() {
                 report.x, report.y, report.theta, report.k3
             );
         }
+        Command::RenderCheckerboard(a) => {
+            let args = render_checkerboard::RenderCheckerboardArgs {
+                width: a.width,
+                height: a.height,
+                x: a.x,
+                y: a.y,
+                theta: a.theta,
+                square_px: a.square,
+                code_size: a.code_size,
+                plain: a.plain,
+                output: std::path::PathBuf::from(&a.output),
+            };
+            if let Err(e) = render_checkerboard::run(&args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::CheckerboardFigures(a) => {
+            let args = checkerboard_figures::CheckerboardFiguresArgs {
+                out_dir: std::path::PathBuf::from(&a.out_dir),
+                square_px: a.square,
+                code_size: a.code_size,
+                size: a.size,
+                poses: a.poses,
+            };
+            if let Err(e) = checkerboard_figures::run(&args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         Command::RenderMegarena(a) => {
             let args = render_megarena::RenderMegarenaArgs {
                 width: a.width,
@@ -83,7 +119,11 @@ fn main() {
         }
         Command::RoundtripMegarena(a) => {
             let Some(kind) = BackendKind::parse(&a.backend) else {
-                eprintln!("unknown backend '{}'. try: {}", a.backend, BackendKind::hint());
+                eprintln!(
+                    "unknown backend '{}'. try: {}",
+                    a.backend,
+                    BackendKind::hint()
+                );
                 std::process::exit(2);
             };
             let task = RoundtripMegarena {
@@ -108,19 +148,31 @@ fn main() {
             let nm_per_px = a.pixel_size * 1000.0;
             println!(
                 "backend={}  renderer={}  size={}x{}  period={:.3}µm  code={}  swapped={}",
-                r.backend, r.renderer, a.width, a.height, a.period * um_per_px, a.code_size, swap_label
+                r.backend,
+                r.renderer,
+                a.width,
+                a.height,
+                a.period * um_per_px,
+                a.code_size,
+                swap_label
             );
             println!(
                 "true:      x={:.4}µm  y={:.4}µm  θ={:.6} rad",
-                r.true_x * um_per_px, r.true_y * um_per_px, r.true_theta
+                r.true_x * um_per_px,
+                r.true_y * um_per_px,
+                r.true_theta
             );
             println!(
                 "recovered: x={:.4}µm  y={:.4}µm  θ={:.6} rad",
-                r.recovered_x * um_per_px, r.recovered_y * um_per_px, r.recovered_theta
+                r.recovered_x * um_per_px,
+                r.recovered_y * um_per_px,
+                r.recovered_theta
             );
             println!(
                 "error abs: Δx={:.1}nm  Δy={:.1}nm  Δθ={:.2e} rad",
-                r.abs_error_x * nm_per_px, r.abs_error_y * nm_per_px, r.error_theta
+                r.abs_error_x * nm_per_px,
+                r.abs_error_y * nm_per_px,
+                r.error_theta
             );
             // Sub-period precision margin, reported in nanometres.
             println!(

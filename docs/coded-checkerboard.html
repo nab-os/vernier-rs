@@ -1,0 +1,804 @@
+<title>Coded Checkerboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+
+<style>
+  :root {
+    --ground: #f5f7fa;
+    --surface: #ffffff;
+    --surface-sunk: #eef1f6;
+    --ink: #11151c;
+    --ink-soft: #3d4756;
+    --muted: #616c7d;
+    --rule: #dbe1ea;
+    --rule-strong: #c3ccd9;
+    --x-code: #2563eb;
+    --y-code: #b45309;
+    --x-wash: #e5edfd;
+    --y-wash: #fbf0dd;
+
+    --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --serif: "IBM Plex Serif", ui-serif, Georgia, "Times New Roman", serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+    --measure: 40rem;
+    --wide: 60rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0d1117;
+      --surface: #151b24;
+      --surface-sunk: #1b222c;
+      --ink: #e9edf3;
+      --ink-soft: #bcc5d2;
+      --muted: #8b95a5;
+      --rule: #262e3a;
+      --rule-strong: #38414f;
+      --x-code: #7ba7f7;
+      --y-code: #e0a44a;
+      --x-wash: #17253f;
+      --y-wash: #33260f;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0d1117;
+    --surface: #151b24;
+    --surface-sunk: #1b222c;
+    --ink: #e9edf3;
+    --ink-soft: #bcc5d2;
+    --muted: #8b95a5;
+    --rule: #262e3a;
+    --rule-strong: #38414f;
+    --x-code: #7ba7f7;
+    --y-code: #e0a44a;
+    --x-wash: #17253f;
+    --y-wash: #33260f;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 1.0625rem;
+    line-height: 1.68;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: var(--wide);
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: clamp(2.5rem, 6vw, 4.5rem) 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3.25rem;
+  }
+
+  .col { max-width: var(--measure); }
+
+  h1, h2, h3 {
+    font-family: var(--sans);
+    color: var(--ink);
+    text-wrap: balance;
+    margin: 0;
+    letter-spacing: -0.015em;
+  }
+  h1 { font-size: clamp(2rem, 5vw, 2.9rem); font-weight: 700; line-height: 1.1; }
+  h2 { font-size: clamp(1.35rem, 3vw, 1.6rem); font-weight: 600; line-height: 1.25; }
+  h3 { font-size: 1.05rem; font-weight: 600; line-height: 1.35; }
+
+  p { margin: 0; }
+  .col > * + * { margin-top: 1rem; }
+  .col > h2 + p, .col > h3 + p { margin-top: 0.7rem; }
+
+  a { color: var(--x-code); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--x-code); outline-offset: 3px; }
+
+  code, .mono { font-family: var(--mono); font-size: 0.9em; }
+  code { background: var(--surface-sunk); padding: 0.1em 0.35em; border-radius: 3px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .lede {
+    font-size: 1.2rem;
+    line-height: 1.55;
+    color: var(--ink-soft);
+  }
+
+  /* ---- section heading with a rule that encodes nothing but separation ---- */
+  section { display: flex; flex-direction: column; gap: 1.5rem; }
+  .section-head {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    border-top: 1px solid var(--rule-strong);
+    padding-top: 1.1rem;
+    max-width: var(--measure);
+  }
+
+  /* ---- figures ---- */
+  figure { margin: 0; }
+  .fig-pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1.25rem 1.5rem;
+    align-items: start;
+  }
+  .fig-pair img, .fig-solo img { width: 100%; height: auto; display: block; border-radius: 2px; }
+  .fig-frame {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 10px;
+    border-radius: 4px;
+  }
+  .crisp { image-rendering: pixelated; }
+  figcaption {
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--muted);
+    margin-top: 0.6rem;
+    max-width: 34rem;
+  }
+  figcaption b { color: var(--ink-soft); font-weight: 600; }
+  .fig-solo { max-width: 32rem; }
+
+  /* ---- the three properties: no numbers, they are not a sequence ---- */
+  .props {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 1.5rem;
+  }
+  .prop { display: flex; flex-direction: column; gap: 0.5rem; }
+  .prop-value {
+    font-family: var(--sans);
+    font-size: 1.9rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .prop-value small { font-size: 0.95rem; font-weight: 500; color: var(--muted); }
+  .prop h3 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); font-weight: 500; }
+  .prop p { font-size: 0.95rem; line-height: 1.55; color: var(--ink-soft); }
+
+  /* ---- tables ---- */
+  .table-wrap { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    font-family: var(--sans);
+    font-size: 0.92rem;
+    width: 100%;
+    min-width: 30rem;
+  }
+  caption {
+    text-align: left;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    color: var(--muted);
+    padding-bottom: 0.6rem;
+  }
+  th, td { text-align: right; padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--rule); }
+  th:first-child, td:first-child { text-align: left; padding-left: 0; }
+  td:last-child, th:last-child { padding-right: 0; }
+  thead th {
+    font-weight: 500;
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    border-bottom-color: var(--rule-strong);
+  }
+  td { font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+  td:first-child { color: var(--ink); }
+  tbody tr:last-child td { border-bottom: none; }
+  .win { color: var(--ink); font-weight: 600; }
+
+  /* ---- decode chain: genuinely ordered, so it is numbered ---- */
+  ol.chain { list-style: none; counter-reset: step; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 1.1rem; }
+  ol.chain li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 2rem 1fr;
+    gap: 0.9rem;
+    max-width: var(--measure);
+  }
+  ol.chain li::before {
+    content: counter(step);
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--muted);
+    border: 1px solid var(--rule-strong);
+    border-radius: 50%;
+    width: 1.75rem;
+    height: 1.75rem;
+    display: grid;
+    place-items: center;
+    margin-top: 0.1rem;
+  }
+  ol.chain b { font-family: var(--sans); font-weight: 600; }
+
+  /* ---- pull-out for the two traps ---- */
+  .trap {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--x-code);
+    border-radius: 0 4px 4px 0;
+    padding: 1.1rem 1.3rem;
+    max-width: var(--measure);
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .trap h3 { font-size: 0.95rem; }
+  .trap p { font-size: 0.97rem; line-height: 1.6; }
+
+  /* ---- formula ---- */
+  .formula {
+    font-family: var(--mono);
+    font-size: 0.95rem;
+    background: var(--surface-sunk);
+    border-radius: 4px;
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+    line-height: 1.7;
+    color: var(--ink-soft);
+    max-width: var(--measure);
+  }
+  .formula b { color: var(--ink); font-weight: 500; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    line-height: 1.65;
+    background: var(--surface-sunk);
+    border-radius: 4px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    margin: 0;
+    color: var(--ink-soft);
+    max-width: var(--wide);
+  }
+  pre .c { color: var(--muted); }
+
+  ul.plain { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.55rem; max-width: var(--measure); }
+  ul.plain li { line-height: 1.6; }
+
+  .key { display: inline-flex; align-items: center; gap: 0.4rem; font-family: var(--sans); font-size: 0.85rem; color: var(--ink-soft); }
+  .swatch { width: 0.85rem; height: 0.85rem; border-radius: 50%; border: 2.5px solid currentColor; display: inline-block; }
+  .keys { display: flex; flex-wrap: wrap; gap: 1.25rem; }
+  .k-x { color: var(--x-code); }
+  .k-y { color: var(--y-code); }
+
+  svg { display: block; max-width: 100%; height: auto; }
+
+  footer {
+    border-top: 1px solid var(--rule-strong);
+    padding-top: 1.2rem;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    color: var(--muted);
+    max-width: var(--measure);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="col">
+    <p class="eyebrow">vernier-rs &middot; pattern proposal</p>
+    <h1>A checkerboard that knows where it is</h1>
+    <p class="lede" style="margin-top:1.1rem">
+      The fine pose already works on a checkerboard. Here is how to give it the absolute
+      one — by inverting a single square in each 3&times;3 block — and the measurements
+      showing the code does not touch the fine phase it rides on.
+    </p>
+    <p style="margin-top:1.25rem; color:var(--muted); font-family:var(--sans); font-size:0.9rem">
+      Implemented on branch <code>worktree-checkerboard-pattern</code>. Every number below comes
+      from <code>vernier checkerboard-figures</code>; every figure is that command's output.
+    </p>
+  </header>
+
+  <!-- ─────────────────────────────  THE PICTURE  ───────────────────────────── -->
+  <section>
+    <div class="section-head">
+      <h2>The idea, in two pictures</h2>
+      <p>
+        Same board, same pose. On the left the plain carrier; on the right the same carrier
+        with an order-8 position code written into it. Every defect you can see is one square
+        painted against its checkerboard parity.
+      </p>
+    </div>
+
+    <figure class="fig-pair">
+      <div>
+        <div class="fig-frame"><img src="figures/plain.png" alt="A plain checkerboard, 64 squares across." width="512" height="512"></div>
+        <figcaption><b>Uncoded.</b> 8&nbsp;px squares, 512&nbsp;px field. Carrier fringes run on the diagonals, 11.31&nbsp;px apart.</figcaption>
+      </div>
+      <div>
+        <div class="fig-frame"><img src="figures/coded.png" alt="The same checkerboard with isolated squares inverted, breaking the pattern into visible domino-shaped defects." width="512" height="512"></div>
+        <figcaption><b>Coded.</b> About one square in nine is inverted. The fill is still exactly 50/50 and the carrier phase is unmoved — both measured below.</figcaption>
+      </div>
+    </figure>
+  </section>
+
+  <!-- ─────────────────────────────  GEOMETRY  ───────────────────────────── -->
+  <section>
+    <div class="section-head">
+      <h2>A checkerboard is a megarena at full fill</h2>
+      <p>
+        This is the observation that makes the whole thing cheap. A checkerboard of square
+        side&nbsp;<i>a</i> is the megarena's dot lattice rotated 45&deg; and filled in
+        completely — so the existing two-peak spectral search, the phase planes, the
+        thumbnail, the LFSR all transpose without modification.
+      </p>
+    </div>
+
+    <div class="col">
+      <p>
+        Write <code>s(x) = sign(cos(&pi;(x/a &minus; &frac12;)))</code> for the square wave of
+        one axis. The board is <code>s(x)&middot;s(y)</code>, and the product of two square
+        waves keeps only odd&times;odd harmonics — so nothing at all lands on the frequency
+        axes, and the lowest terms are a pair of diagonal carriers:
+      </p>
+    </div>
+
+    <div class="formula">
+      (8/&pi;&sup2;) &middot; [ cos <b>&phi;&#8321;</b> + cos <b>&phi;&#8322;</b> ]
+      &nbsp;&nbsp;with&nbsp;&nbsp;
+      <b>&phi;&#8321;</b> = &pi;((x+y)/a &minus; 1)&nbsp;&nbsp;&nbsp;<b>&phi;&#8322;</b> = &pi;(x&minus;y)/a
+    </div>
+
+    <figure class="fig-solo" style="max-width:38rem">
+      <svg viewBox="0 0 520 260" role="img" aria-label="A checkerboard with the two carrier directions drawn along its diagonals, at 45 degrees to the square edges.">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+          </marker>
+        </defs>
+        <g transform="translate(14,18)">
+          <!-- checkerboard 7x6 at 34px -->
+          <rect x="0" y="0" width="238" height="204" fill="#ffffff" stroke="var(--rule-strong)"></rect>
+          <g fill="#14181f">
+            <rect x="34" y="0" width="34" height="34"></rect><rect x="102" y="0" width="34" height="34"></rect><rect x="170" y="0" width="34" height="34"></rect>
+            <rect x="0" y="34" width="34" height="34"></rect><rect x="68" y="34" width="34" height="34"></rect><rect x="136" y="34" width="34" height="34"></rect><rect x="204" y="34" width="34" height="34"></rect>
+            <rect x="34" y="68" width="34" height="34"></rect><rect x="102" y="68" width="34" height="34"></rect><rect x="170" y="68" width="34" height="34"></rect>
+            <rect x="0" y="102" width="34" height="34"></rect><rect x="68" y="102" width="34" height="34"></rect><rect x="136" y="102" width="34" height="34"></rect><rect x="204" y="102" width="34" height="34"></rect>
+            <rect x="34" y="136" width="34" height="34"></rect><rect x="102" y="136" width="34" height="34"></rect><rect x="170" y="136" width="34" height="34"></rect>
+            <rect x="0" y="170" width="34" height="34"></rect><rect x="68" y="170" width="34" height="34"></rect><rect x="136" y="170" width="34" height="34"></rect><rect x="204" y="170" width="34" height="34"></rect>
+          </g>
+
+          <!-- carrier direction 1: along (1,1) -->
+          <g class="k-x" color="var(--x-code)">
+            <line x1="10" y1="10" x2="150" y2="150" stroke="currentColor" stroke-width="3" marker-end="url(#arrow)"></line>
+            <text x="112" y="104" font-family="var(--sans)" font-size="15" font-weight="600" fill="currentColor">&phi;&#8321;</text>
+          </g>
+          <!-- carrier direction 2: along (1,-1) -->
+          <g color="var(--y-code)">
+            <line x1="10" y1="194" x2="150" y2="54" stroke="currentColor" stroke-width="3" marker-end="url(#arrow)"></line>
+            <text x="116" y="96" font-family="var(--sans)" font-size="15" font-weight="600" fill="currentColor" dy="26">&phi;&#8322;</text>
+          </g>
+
+          <!-- period bracket along the diagonal -->
+          <g stroke="var(--ink)" fill="none" stroke-width="1.5" stroke-dasharray="4 3">
+            <line x1="204" y1="0" x2="238" y2="34"></line>
+            <line x1="170" y1="34" x2="204" y2="68"></line>
+          </g>
+          <text x="248" y="30" font-family="var(--mono)" font-size="12" fill="var(--ink-soft)">one carrier</text>
+          <text x="248" y="46" font-family="var(--mono)" font-size="12" fill="var(--ink-soft)">period = a&radic;2</text>
+
+          <text x="248" y="108" font-family="var(--mono)" font-size="12" fill="var(--muted)">at a square centre:</text>
+          <text x="248" y="128" font-family="var(--mono)" font-size="12.5" fill="var(--ink)">&phi;&#8321;/&pi; = i + j</text>
+          <text x="248" y="146" font-family="var(--mono)" font-size="12.5" fill="var(--ink)">&phi;&#8322;/&pi; = i &minus; j</text>
+          <text x="248" y="172" font-family="var(--mono)" font-size="12" fill="var(--muted)">&rarr; the phase pair</text>
+          <text x="248" y="188" font-family="var(--mono)" font-size="12" fill="var(--muted)">indexes the squares</text>
+        </g>
+      </svg>
+      <figcaption>
+        The carriers run at &plusmn;45&deg; to the square edges, one period every <i>a</i>&radic;2
+        along each diagonal. Both read <code>+1</code> at the centre of a white square, so a pair
+        of unwrapped phases names a square outright — which is what the decoder samples on.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ─────────────────────────────  HOW A BIT IS WRITTEN  ───────────────────────────── -->
+  <section>
+    <div class="section-head">
+      <h2>How a bit is written</h2>
+      <p>
+        Squares group into 3&times;3 supercells. Two squares per supercell carry code: the one at
+        <code>(1,0)</code> holds the x-code bit of its supercell column, the one at
+        <code>(0,1)</code> the y-code bit of its row. A site whose bit is <code>0</code> is
+        painted against its parity. Everything else is left alone.
+      </p>
+    </div>
+
+    <div class="col">
+      <p style="font-family:var(--sans); font-size:1.05rem; font-weight:600; color:var(--ink)">
+        Reading a bit is then one question: does this square's colour disagree with
+        <code>(i+j) mod 2</code>?
+      </p>
+      <p>
+        No reference marks are needed to answer it. The eight neighbours of every coding site are
+        guaranteed-correct squares of both colours, which is a free local black and white
+        reference — the megarena has to spend dedicated reference dots on the same job.
+      </p>
+    </div>
+
+    <figure class="fig-solo" style="max-width:40rem">
+      <svg viewBox="0 0 470 210" role="img" aria-label="Two adjacent 3 by 3 supercells, with the x-code site ringed in blue and the y-code site ringed in amber; the sites are black in the first supercell and white in the second.">
+        <g transform="translate(46,26)">
+          <!-- 6 wide x 3 tall, 52px cells. white if (i+j) even -->
+          <rect x="0" y="0" width="312" height="156" fill="#ffffff" stroke="var(--rule-strong)"></rect>
+          <g fill="#14181f">
+            <rect x="52" y="0" width="52" height="52"></rect><rect x="156" y="0" width="52" height="52"></rect><rect x="260" y="0" width="52" height="52"></rect>
+            <rect x="0" y="52" width="52" height="52"></rect><rect x="104" y="52" width="52" height="52"></rect><rect x="208" y="52" width="52" height="52"></rect>
+            <rect x="52" y="104" width="52" height="52"></rect><rect x="156" y="104" width="52" height="52"></rect><rect x="260" y="104" width="52" height="52"></rect>
+          </g>
+          <!-- supercell divider -->
+          <line x1="156" y1="-8" x2="156" y2="164" stroke="var(--ink)" stroke-width="2" stroke-dasharray="5 4"></line>
+
+          <!-- x sites: (1,0) and (4,0) -->
+          <g fill="none" stroke="var(--x-code)" stroke-width="5">
+            <rect x="55" y="3" width="46" height="46" rx="2"></rect>
+            <rect x="211" y="3" width="46" height="46" rx="2"></rect>
+          </g>
+          <!-- y sites: (0,1) and (3,1) -->
+          <g fill="none" stroke="var(--y-code)" stroke-width="5">
+            <rect x="3" y="55" width="46" height="46" rx="2"></rect>
+            <rect x="159" y="55" width="46" height="46" rx="2"></rect>
+          </g>
+
+          <!-- axis labels -->
+          <text x="-34" y="30" font-family="var(--mono)" font-size="13" fill="var(--muted)">j=0</text>
+          <text x="-34" y="82" font-family="var(--mono)" font-size="13" fill="var(--muted)">j=1</text>
+          <text x="-34" y="134" font-family="var(--mono)" font-size="13" fill="var(--muted)">j=2</text>
+          <text x="20" y="-10" font-family="var(--mono)" font-size="13" fill="var(--muted)">i=0</text>
+          <text x="176" y="-10" font-family="var(--mono)" font-size="13" fill="var(--muted)">i=3</text>
+
+          <text x="26" y="182" font-family="var(--sans)" font-size="12.5" fill="var(--muted)">supercell k</text>
+          <text x="186" y="182" font-family="var(--sans)" font-size="12.5" fill="var(--muted)">supercell k+1</text>
+
+          <text x="330" y="26" font-family="var(--sans)" font-size="12.5" font-weight="600" fill="var(--x-code)">x code</text>
+          <text x="330" y="43" font-family="var(--mono)" font-size="11.5" fill="var(--muted)">bit of column k</text>
+          <text x="330" y="78" font-family="var(--sans)" font-size="12.5" font-weight="600" fill="var(--y-code)">y code</text>
+          <text x="330" y="95" font-family="var(--mono)" font-size="11.5" fill="var(--muted)">bit of row l</text>
+          <text x="330" y="132" font-family="var(--mono)" font-size="11.5" fill="var(--ink-soft)">sites alternate</text>
+          <text x="330" y="148" font-family="var(--mono)" font-size="11.5" fill="var(--ink-soft)">colour with k+l</text>
+        </g>
+      </svg>
+      <figcaption>
+        Coding sites sit at <code>(3k+1,&nbsp;3l)</code> and <code>(3k,&nbsp;3l+1)</code>, whose parity is
+        <code>(k+l+1) mod 2</code>. Both sites are black in the left supercell and white in the right —
+        that alternation is what keeps the fill balanced.
+      </figcaption>
+    </figure>
+
+    <div class="keys" style="max-width:var(--measure)">
+      <span class="key k-x"><span class="swatch"></span> x-code site</span>
+      <span class="key k-y"><span class="swatch"></span> y-code site</span>
+      <span class="key" style="color:var(--muted)">filled centre = inverted, i.e. a <code>0</code> bit</span>
+    </div>
+
+    <figure class="fig-pair">
+      <div>
+        <div class="fig-frame"><img class="crisp" src="figures/zoom.png" alt="Close-up of four by four supercells with coding sites ringed in blue and amber; inverted sites carry a filled dot." width="288" height="288"></div>
+        <figcaption><b>Four supercells across.</b> Rings mark every coding site; a filled centre means that site is inverted. Count the rings on black and on white squares — they come out even.</figcaption>
+      </div>
+      <div>
+        <div class="fig-frame"><img src="figures/annotated.png" alt="A wider field of the coded checkerboard with all coding sites marked." width="512" height="512"></div>
+        <figcaption><b>The same marking over a wider field.</b> Two of every nine squares carry code; about half of those are inverted at any point on the board.</figcaption>
+      </div>
+    </figure>
+  </section>
+
+  <!-- ─────────────────────────────  MEASUREMENTS  ───────────────────────────── -->
+  <section>
+    <div class="section-head">
+      <h2>Three properties, and what they measure</h2>
+      <p>
+        These are not steps in a process; they are the three things the design has to be true
+        for it to be worth building, each with the number that came back.
+      </p>
+    </div>
+
+    <div class="props" style="max-width:var(--wide)">
+      <div class="prop">
+        <h3>Balanced</h3>
+        <div class="prop-value">0.5000<small> white</small></div>
+        <p>
+          Measured over a whole code period. Because coding sites alternate parity, half the
+          inversions go white&rarr;black and half the other way, so the fill does not drift with the
+          code. A megarena cannot have this: a removed dot is always a loss of white.
+        </p>
+      </div>
+      <div class="prop">
+        <h3>Phase-neutral</h3>
+        <div class="prop-value">4.0<small> mrad rms</small></div>
+        <p>
+          A square centre is an extremum of both carriers, so inverting it is a purely
+          <i>real</i> perturbation in the carrier basis — it shrinks the peak, it never rotates it.
+          At a 10&nbsp;&micro;m square that residual is about <b>9&nbsp;nm</b> of position.
+        </p>
+      </div>
+      <div class="prop">
+        <h3>Cheap</h3>
+        <div class="prop-value">77.7<small>% carrier kept</small></div>
+        <p>
+          Roughly one square in nine flips, each costing twice its own contribution. And it is
+          spent from a much larger budget: the uncoded checkerboard puts 0.40 of full scale into
+          each carrier against the megarena dot's 0.25.
+        </p>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="max-width:var(--wide)">
+      <table>
+        <caption>
+          Order&nbsp;8 code, 8&nbsp;px squares, 512&nbsp;px fields, 32 poses spread over a full code
+          period. Phase error is the shift of the measured carrier between the coded render and the
+          uncoded one at the same pose — one exact DFT bin, so the carrier itself leaks nothing.
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Measurement</th>
+            <th scope="col">Coded checkerboard</th>
+            <th scope="col">Megarena, matched carrier</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Fill, white share</td><td class="win">0.5000</td><td>0.25 by construction</td></tr>
+          <tr><td>Carrier amplitude, uncoded</td><td class="win">0.4015</td><td>0.25</td></tr>
+          <tr><td>Carrier amplitude, coded</td><td class="win">0.3119</td><td>&mdash;</td></tr>
+          <tr><td>Carrier kept</td><td>77.7&thinsp;% <span style="color:var(--muted)">(71&ndash;88&thinsp;% locally)</span></td><td>&mdash;</td></tr>
+          <tr><td>Code-induced phase, rms</td><td class="win">4.024 mrad &middot; 0.0072 px</td><td>6.650 mrad &middot; 0.0120 px</td></tr>
+          <tr><td>Code-induced phase, max</td><td class="win">8.146 mrad &middot; 0.0147 px</td><td>20.931 mrad &middot; 0.0377 px</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col">
+      <p>
+        The carrier loss varies a lot from place to place on the board — 71&thinsp;% to 88&thinsp;% —
+        because it depends on how many <code>0</code> bits happen to be in view, and an LFSR has
+        stretches that are nearly all ones. Only the average over a whole period is a fair number.
+        A window that happens to sit on the sequence's run of ones reports 87&thinsp;%, which is
+        true and misleading.
+      </p>
+    </div>
+
+    <figure class="fig-solo" style="max-width:26rem">
+      <div class="fig-frame"><img class="crisp" src="figures/spectrum-checkerboard.png" alt="Log-magnitude spectrum showing a regular grid of peaks with streaks running through them." width="192" height="192"></div>
+      <figcaption>
+        Log spectrum of the coded board, Hann-windowed, DC at centre, &plusmn;48 bins. The bright
+        lattice is the carrier and its harmonics; the streaks through each peak are the code,
+        spread into a broad pedestal rather than a coherent line because an LFSR sequence is
+        spectrally white. The peaks themselves do not move — that is the 4&nbsp;mrad above.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ─────────────────────────────  DECODE  ───────────────────────────── -->
+  <section>
+    <div class="section-head">
+      <h2>Reading it back</h2>
+      <p>
+        Five steps, in order, from phase planes to an absolute square index. All of it lives in
+        <code>vernier-pose/src/checkerboard.rs</code>.
+      </p>
+    </div>
+
+    <ol class="chain">
+      <li><div><b>Sample.</b> With <code>s = &phi;&#8321;/&pi;</code> and <code>d = &phi;&#8322;/&pi;</code>, the
+        continuous square coordinates are <code>&icirc; = (s+d)/2</code> and <code>&jcirc; = (s&minus;d)/2</code>.
+        Pixels close to a lattice point on both axes are pooled into that square's mean intensity;
+        edge pixels, which carry the transition, are dropped.</div></li>
+      <li><div><b>Binarize.</b> The board is 50/50 by construction, so the mean of all square samples
+        already sits between the two populations. One k-means step centres it. The balance
+        property is what makes a global threshold viable at all.</div></li>
+      <li><div><b>Build the defect map.</b> Mark every square whose colour disagrees with
+        <code>(i+j) mod 2</code>. The right parity hypothesis defects about 1 square in 9; the wrong
+        one about 8 in 9 — so the black/white ambiguity resolves itself, with no search.</div></li>
+      <li><div><b>Place the supercell grid.</b> The frame offset is known only modulo 3, so all nine
+        offsets are tried &times; the four rotations. Each choice says exactly which squares carry
+        which code.</div></li>
+      <li><div><b>Localize.</b> One bit per supercell per axis; <code>order</code> bits fix the
+        position in the LFSR sequence, and every further bit checks it.</div></li>
+    </ol>
+
+    <div class="col">
+      <p>
+        Against ground truth — render at a known pose, decode, compare to the square the image
+        centre actually sits on — this recovers the right square out of 765 across translations
+        spanning the whole board and through rotation, and the continuous position to better than
+        0.25&nbsp;px.
+      </p>
+    </div>
+
+    <div class="trap">
+      <h3>The trap: every window localizes</h3>
+      <p>
+        A maximal LFSR of order <i>n</i> contains <em>every</em> non-zero <i>n</i>-bit word exactly
+        once. So a window <b>always</b> decodes — including one read in the wrong orientation, which
+        decodes confidently to the wrong place. No single window can ever be used to choose between
+        hypotheses. The decoder over-reads instead: it locates on <code>order</code> bits and requires
+        every remaining bit to agree. A typical field leaves 13 spare bits per axis, so a wrong
+        hypothesis survives with probability 2&#8315;&sup1;&sup3;.
+      </p>
+      <p style="color:var(--muted); font-size:0.9rem">
+        Worth stating plainly, because the opposite is the natural assumption: a wrong orientation
+        cannot be rejected on the grounds that its window "isn't in the sequence". It always is.
+      </p>
+    </div>
+
+    <div class="trap">
+      <h3>The subtler trap: the board is mirror-symmetric</h3>
+      <p>
+        Both axes carry the <em>same</em> LFSR. Transpose <i>i</i> and <i>j</i> and you swap the two
+        coding sites <em>and</em> their two codes — and get the pattern back exactly. So a mirrored
+        reading of the frame decodes just as convincingly, into a position reflected about the
+        diagonal. Check bits cannot separate them &mdash; it surfaces as a decode that is off by one
+        square along the anti-diagonal, with every check bit agreeing.
+      </p>
+      <p>
+        Nothing in the image is mirrored — the mirroring comes from the peak search, which may return
+        the two carrier directions in either order. That is recoverable from the carriers themselves:
+        <code>&nabla;&phi;&#8321;</code> and <code>&nabla;&phi;&#8322;</code> have a negative cross
+        product, and rotating the board does not change that sign. A positive one means the
+        directions came back swapped, and negating <code>&phi;&#8322;</code> restores the convention.
+        After that only four rotations remain, and their coding-site offsets are all different.
+      </p>
+    </div>
+
+    <div class="trap">
+      <h3>And one more: the code period is odd</h3>
+      <p>
+        The range is <code>3&middot;(2&#8319;&minus;1)</code> squares — 765 at order 8 — which is always
+        odd, while the checkerboard parity has period 2. Shifting by one whole code period lands on
+        the same code with the colours swapped, so the board only truly repeats after <em>two</em>
+        code periods. Any check of the form "the frame offset must preserve parity" is therefore
+        invalid, because the offset is only known modulo an odd number. The spare factor of two in
+        range is real and is left on the table.
+      </p>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────  SIZING  ───────────────────────────── -->
+  <section>
+    <div class="section-head">
+      <h2>Sizing</h2>
+      <p>
+        Three squares per bit per axis. The field of view has to hold <code>order</code> bits plus a
+        few spares in both directions.
+      </p>
+    </div>
+
+    <div class="table-wrap" style="max-width:var(--wide)">
+      <table>
+        <caption>Range and field of view at a 10&nbsp;&micro;m square — a 14.1&nbsp;&micro;m carrier period.</caption>
+        <thead>
+          <tr>
+            <th scope="col">LFSR order</th>
+            <th scope="col">Range, squares</th>
+            <th scope="col">Range at a&nbsp;=&nbsp;10&nbsp;&micro;m</th>
+            <th scope="col">Field needed</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>8</td><td>765</td><td>7.7 mm</td><td>33 squares &middot; 330 &micro;m</td></tr>
+          <tr><td>10</td><td>3 069</td><td>30.7 mm</td><td>39 squares &middot; 390 &micro;m</td></tr>
+          <tr><td>12</td><td>12 285</td><td>122.9 mm</td><td>45 squares &middot; 450 &micro;m</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col">
+      <p>
+        One thing to watch when comparing with an existing megarena: the carrier period is
+        <i>a</i>&radic;2, not <i>a</i>. At the same number of camera pixels per fringe the
+        checkerboard square is <code>1/&radic;2</code> of a megarena period, so range shrinks by
+        &radic;2 — which one extra bit of code depth more than buys back.
+      </p>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────  WHAT EXISTS  ───────────────────────────── -->
+  <section>
+    <div class="section-head">
+      <h2>What is on the branch</h2>
+    </div>
+
+    <pre><span class="c"># generate a board</span>
+cargo run -p vernier-cli --release -- render-checkerboard \
+    --output board.png --square 12 --code-size 10
+
+<span class="c"># regenerate every figure and number on this page</span>
+cargo run -p vernier-cli --release -- checkerboard-figures \
+    --out-dir docs/figures/checkerboard
+
+<span class="c"># decode against ground truth</span>
+cargo test -p vernier-pose --release --test checkerboard_absolute</pre>
+
+    <ul class="plain">
+      <li><code>vernier-patterns/src/checkerboard.rs</code> — the pattern: layout, phases, renderer.
+        Eleven tests, including the phase-neutrality property and the 50/50 balance over a whole
+        code period.</li>
+      <li><code>vernier-pose/src/checkerboard.rs</code> — the decoder, and a <code>CoarseDecoder</code>
+        impl so it plugs into the existing absolute-pose assembly.</li>
+      <li><code>vernier-pose/tests/checkerboard_absolute.rs</code> — the ground-truth round trip,
+        across translation, rotation, sub-square position, and a too-small field that must fail
+        rather than guess.</li>
+      <li><code>vernier-cli/src/commands/</code> — <code>render_checkerboard.rs</code> and
+        <code>checkerboard_figures.rs</code>.</li>
+      <li>Reused unchanged: <code>lfsr.rs</code>, the spectral pipeline, the phase planes. No change
+        to any existing pattern.</li>
+    </ul>
+  </section>
+
+  <!-- ─────────────────────────────  OPEN  ───────────────────────────── -->
+  <section>
+    <div class="section-head">
+      <h2>Not done, and deliberately not done</h2>
+    </div>
+
+    <div class="col">
+      <h3>Open</h3>
+    </div>
+    <ul class="plain">
+      <li><b>Orientation convention.</b> &theta; comes out as the fine plane angle less the winning
+        rotation's quarter-turn. Tests only exercise <code>|&theta;| &lt; 0.8 rad</code>; the quadrant
+        convention wants checking against the C++ <code>computeAbsolutePose</code> before anyone
+        trusts it near the diagonals.</li>
+      <li><b>Real images.</b> Binarization is a global threshold. It works because the board is
+        balanced, but an illumination gradient would want a local one. Nothing here has met a
+        camera yet.</li>
+      <li><b>Noise tolerance.</b> The decoder allows one wrong bit per axis. That number is a
+        guess, not a measurement.</li>
+      <li><b>No C++ port.</b> Rust only, so far.</li>
+    </ul>
+
+    <div class="col" style="margin-top:0.5rem">
+      <h3>Considered and not taken</h3>
+      <p>
+        <b>A dotted board</b> — leave the checkerboard untouched and put a small opposite-colour dot
+        at the centre of coding squares. The saddle points survive, so <code>findChessboardCorners</code>
+        and ChArUco-style detection keep working on the same target. Worth doing if the board should
+        double as a calibration target; it costs a little balance and a little carrier.
+      </p>
+      <p>
+        <b>A 2D perfect map</b> (De Bruijn torus) instead of two separable sequences — a much smaller
+        field of view, a square window instead of a full row <em>and</em> column, at the price of a
+        hash-table decode and no reuse of the existing LFSR machinery. Only worth it if the field is
+        tight.
+      </p>
+      <p>
+        <b>And the tempting one that breaks everything:</b> encoding by nudging every third grid line
+        by &plusmn;&delta;. It keeps every square and every corner intact — and it is phase modulation
+        by definition, so it biases the very quantity we measure. It trades the thing that already
+        works for the thing we want.
+      </p>
+    </div>
+  </section>
+
+  <footer>
+    Branch <code>worktree-checkerboard-pattern</code> &middot; figures and measurements regenerate with
+    <code>vernier checkerboard-figures</code> &middot; all 82 workspace tests pass.
+  </footer>
+
+</div>

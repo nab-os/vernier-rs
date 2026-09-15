@@ -10,11 +10,16 @@
 //! - [`megarena`] — the absolute LFSR-encoded pattern: a 3-period-per-bit
 //!   carrier gated by a maximal [`lfsr`] sequence, with one corner removed to
 //!   fix the π/2 rotation ambiguity.
+//! - [`checkerboard`] — the same [`lfsr`] code on a 50/50 black-and-white
+//!   carrier: bits are written by inverting one square per 3×3 supercell
+//!   instead of removing dots, which keeps the fill balanced and buys ~1.6× the
+//!   carrier amplitude of a megarena.
 //! - [`lfsr`] — the maximal-length sequence generator shared by the renderer and
 //!   decoder.
 //! - [`render`] — shared rasterization helpers.
 //! - [`qrcode`], [`stamp`] — stubs; the interface is fixed, the encoding isn't.
 
+pub mod checkerboard;
 pub mod lfsr;
 pub mod megarena;
 pub mod periodic;
