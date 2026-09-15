@@ -11,11 +11,15 @@
 //!   cell, not which cell).
 //! - [`absolute`] — coarse code decode + fine phase. Resolves which period
 //!   you're in for an unambiguous `(x, y, θ)`.
+//! - [`checkerboard`] — the same coarse+fine split for the coded checkerboard,
+//!   whose carriers run along the diagonals and whose code is read from squares
+//!   painted against their checkerboard parity.
 //!
 //! Both are plain host-side functions over already-detected features — no
 //! backend generics, since the device work is done by this point.
 
 pub mod absolute;
+pub mod checkerboard;
 pub mod periodic;
 
 use vernier_core::Real;
