@@ -7,7 +7,9 @@
 //! means a new generator parameter needs a field and one match arm, not a tour
 //! of the component tree.
 
+use vernier_core::scalar::consts::SQRT_2;
 use vernier_core::{GrayImage, Real};
+use vernier_patterns::checkerboard::Checkerboard;
 use vernier_patterns::megarena::Megarena;
 use vernier_patterns::periodic::Periodic;
 use vernier_patterns::qrcode::QrLike;
@@ -30,6 +32,8 @@ pub enum PatternKind {
     Periodic,
     /// Absolute LFSR-coded dot grid — `vernier_patterns::megarena::Megarena`.
     Megarena,
+    /// 50/50 absolute checkerboard — `vernier_patterns::checkerboard::Checkerboard`.
+    Checkerboard,
     /// `vernier_patterns::stamp::Stamp` (layout not implemented upstream).
     Stamp,
     /// `vernier_patterns::qrcode::QrLike` (encoding not implemented upstream).
@@ -38,9 +42,10 @@ pub enum PatternKind {
 
 impl PatternKind {
     /// Every kind, in the order the type selector shows them.
-    pub const ALL: [PatternKind; 4] = [
+    pub const ALL: [PatternKind; 5] = [
         PatternKind::Periodic,
         PatternKind::Megarena,
+        PatternKind::Checkerboard,
         PatternKind::Stamp,
         PatternKind::QrLike,
     ];
@@ -50,6 +55,7 @@ impl PatternKind {
         match self {
             PatternKind::Periodic => "Periodic",
             PatternKind::Megarena => "Megarena",
+            PatternKind::Checkerboard => "Checkerboard",
             PatternKind::Stamp => "Stamp",
             PatternKind::QrLike => "QR-like",
         }
@@ -65,6 +71,12 @@ impl PatternKind {
             PatternKind::Megarena => {
                 "Absolute dot grid. Three periods per bit, the central one gated by a maximal LFSR, \
                  with one corner of each 3×3 cell dropped to break the π/2 rotation ambiguity."
+            }
+            PatternKind::Checkerboard => {
+                "The same LFSR position code on a 50/50 black-and-white carrier. Bits are written by \
+                 inverting one square per axis in each 3×3 supercell, which shrinks the carrier peak \
+                 without rotating it — so the code cannot corrupt the fine pose. Its two carriers run \
+                 along the diagonals, at ±45° to the square edges."
             }
             PatternKind::Stamp => {
                 "Stamp tile layout. The interface is fixed upstream but the rasterizer is a stub, \
@@ -88,6 +100,7 @@ impl PatternKind {
         match self {
             PatternKind::Periodic => "vernier-patterns/src/periodic.rs",
             PatternKind::Megarena => "vernier-patterns/src/megarena.rs",
+            PatternKind::Checkerboard => "vernier-patterns/src/checkerboard.rs",
             PatternKind::Stamp => "vernier-patterns/src/stamp.rs",
             PatternKind::QrLike => "vernier-patterns/src/qrcode.rs",
         }
@@ -123,6 +136,20 @@ pub struct PatternSettings {
     /// decode window off the sequence boundary.
     pub lfsr_offset: i64,
 
+    /// Checkerboard square side in pixels. Separate from [`period_px`] because
+    /// it is not a carrier period: the carriers run diagonally, one fringe every
+    /// `square_px · √2`.
+    ///
+    /// [`period_px`]: PatternSettings::period_px
+    pub square_px: Real,
+    /// Sub-samples per pixel edge when rasterizing the checkerboard. The pattern
+    /// is binary with hard edges, so point sampling aliases and shifts the
+    /// measured carrier phase.
+    pub supersample: u32,
+    /// Render the checkerboard with every coding site left at its parity colour
+    /// — the uncoded reference, for seeing what the code costs.
+    pub plain_checkerboard: bool,
+
     /// Stamp tile side in pixels.
     pub tile_px: usize,
 
@@ -147,6 +174,11 @@ impl Default for PatternSettings {
             period_px: 20.0,
             order: 8,
             lfsr_offset: 8,
+            // Matches `vernier-cli render-checkerboard --square`.
+            square_px: 12.0,
+            // Upstream's own default; see the supersample field.
+            supersample: 4,
+            plain_checkerboard: false,
             tile_px: 32,
             modules: 21,
             module_px: 8,
@@ -161,6 +193,25 @@ impl PatternSettings {
         PatternPose::new(self.pose_x, self.pose_y, self.theta_deg.to_radians())
     }
 
+    /// Distance between successive checkerboard carrier fringes, `a·√2`. The
+    /// carriers run along the diagonals, so this — not the square side — is the
+    /// "period" a detector is configured with.
+    pub fn carrier_period_px(&self) -> Real {
+        self.square_px * SQRT_2
+    }
+
+    /// Message for an LFSR order upstream won't build a maximal sequence for.
+    /// Shared by the two coded patterns, which take the order the same way.
+    fn order_error(&self) -> String {
+        format!(
+            "LFSR order {} is unsupported — vernier-patterns generates maximal \
+             sequences of order {}..={} only.",
+            self.order,
+            ORDER_RANGE.start(),
+            ORDER_RANGE.end()
+        )
+    }
+
     /// Runs the selected generator. The error case is a parameter combination
     /// upstream rejects — currently only an unsupported LFSR order.
     pub fn render(&self) -> Result<GrayImage, String> {
@@ -171,15 +222,19 @@ impl PatternSettings {
             PatternKind::Periodic => Ok(Periodic::new(self.period_px).render(w, h, &pose)),
             PatternKind::Megarena => Megarena::new(self.period_px, self.order)
                 .map(|pattern| pattern.with_lfsr_offset(self.lfsr_offset).render(w, h, &pose))
-                .ok_or_else(|| {
-                    format!(
-                        "LFSR order {} is unsupported — vernier-patterns generates maximal \
-                         sequences of order {}..={} only.",
-                        self.order,
-                        ORDER_RANGE.start(),
-                        ORDER_RANGE.end()
-                    )
-                }),
+                .ok_or_else(|| self.order_error()),
+            PatternKind::Checkerboard => Checkerboard::new(self.square_px, self.order)
+                .map(|pattern| {
+                    let pattern = pattern
+                        .with_lfsr_offset(self.lfsr_offset)
+                        .with_supersample(self.supersample);
+                    if self.plain_checkerboard {
+                        pattern.render_plain(w, h, &pose)
+                    } else {
+                        pattern.render(w, h, &pose)
+                    }
+                })
+                .ok_or_else(|| self.order_error()),
             PatternKind::Stamp => Ok(Stamp::new(self.tile_px).render(w, h, &pose)),
             PatternKind::QrLike => {
                 Ok(QrLike::new(self.modules, self.module_px).render(w, h, &pose))
@@ -206,6 +261,19 @@ impl PatternSettings {
                     ("Bits across width".into(), format!("{:.2}", self.width as Real / (3.0 * self.period_px))),
                 ]
             }
+            PatternKind::Checkerboard => {
+                let code_len = (1u64 << self.order) - 1;
+                // CELL (3) squares per code bit, as in the megarena.
+                let range_squares = 3 * code_len;
+                vec![
+                    ("Code length".into(), format!("{code_len} bits (2^{} − 1)", self.order)),
+                    // The carriers run diagonally, so a fringe is a√2 apart —
+                    // this, not the square side, is what a detector is told.
+                    ("Carrier period".into(), format!("{:.2} px", self.carrier_period_px())),
+                    ("Absolute range".into(), format!("{range_squares} sq ({:.0} px)", range_squares as Real * self.square_px)),
+                    ("Squares across width".into(), format!("{:.2}", self.width as Real / self.square_px)),
+                ]
+            }
             PatternKind::Stamp => vec![
                 ("Tiles across width".into(), format!("{:.2}", self.width as Real / self.tile_px.max(1) as Real)),
             ],
@@ -228,11 +296,21 @@ impl PatternSettings {
                 "Megarena::new({:.3}, {})\n    .unwrap()\n    .with_lfsr_offset({})",
                 self.period_px, self.order, self.lfsr_offset
             ),
+            PatternKind::Checkerboard => format!(
+                "Checkerboard::new({:.3}, {})\n    .unwrap()\n    .with_lfsr_offset({})\n    .with_supersample({})",
+                self.square_px, self.order, self.lfsr_offset, self.supersample
+            ),
             PatternKind::Stamp => format!("Stamp::new({})", self.tile_px),
             PatternKind::QrLike => format!("QrLike::new({}, {})", self.modules, self.module_px),
         };
+        // The uncoded reference is a different method, not a different builder.
+        let method = if self.kind == PatternKind::Checkerboard && self.plain_checkerboard {
+            "render_plain"
+        } else {
+            "render"
+        };
         format!(
-            "let pose = {pose};\nlet image = {constructor}\n    .render({}, {}, &pose);",
+            "let pose = {pose};\nlet image = {constructor}\n    .{method}({}, {}, &pose);",
             self.width, self.height
         )
     }
@@ -242,6 +320,12 @@ impl PatternSettings {
         let base = match self.kind {
             PatternKind::Periodic => format!("periodic_p{:.0}", self.period_px),
             PatternKind::Megarena => format!("megarena_p{:.0}_n{}", self.period_px, self.order),
+            PatternKind::Checkerboard => format!(
+                "checkerboard{}_a{:.0}_n{}",
+                if self.plain_checkerboard { "_plain" } else { "" },
+                self.square_px,
+                self.order
+            ),
             PatternKind::Stamp => format!("stamp_t{}", self.tile_px),
             PatternKind::QrLike => format!("qrlike_{}x{}", self.modules, self.module_px),
         };
@@ -354,6 +438,89 @@ mod tests {
         // 255 bits × 3 periods per bit × 20 px.
         let range = &derived.iter().find(|(name, _)| name == "Absolute range").unwrap().1;
         assert_eq!(range, "15300 px");
+    }
+
+    #[test]
+    fn checkerboard_is_balanced_and_binary() {
+        let settings = PatternSettings {
+            kind: PatternKind::Checkerboard,
+            square_px: 16.0,
+            order: 8,
+            width: 384,
+            height: 384,
+            // Point-sample so pixels stay hard black or white and the fill
+            // fraction isn't blurred by edge pixels.
+            supersample: 1,
+            ..Default::default()
+        };
+        let image = settings.render().unwrap();
+
+        let white = image.as_slice().iter().filter(|&&v| v > 0.5).count();
+        let fraction = white as f64 / image.as_slice().len() as f64;
+        // The design claims 50/50 fill whatever the code says: coding-site
+        // inversions alternate in parity, so they cancel.
+        assert!(
+            (fraction - 0.5).abs() < 0.02,
+            "fill fraction {fraction:.4} should stay balanced"
+        );
+    }
+
+    #[test]
+    fn uncoded_reference_differs_from_the_coded_render() {
+        let coded = PatternSettings {
+            kind: PatternKind::Checkerboard,
+            supersample: 1,
+            width: 192,
+            height: 192,
+            ..Default::default()
+        };
+        let plain = PatternSettings { plain_checkerboard: true, ..coded.clone() };
+
+        let a = coded.render().unwrap();
+        let b = plain.render().unwrap();
+        let differing = a
+            .as_slice()
+            .iter()
+            .zip(b.as_slice())
+            .filter(|(x, y)| (*x - *y).abs() > 0.5)
+            .count();
+
+        // ~1/9 of squares are coding sites that got inverted; the reference
+        // leaves them at parity, so a good fraction of pixels must differ.
+        assert!(differing > 0, "the uncoded reference should differ from the coded render");
+        let fraction = differing as f64 / a.as_slice().len() as f64;
+        assert!(
+            fraction < 0.2,
+            "only coding sites should differ, got {fraction:.3} of pixels"
+        );
+    }
+
+    #[test]
+    fn carrier_period_is_the_square_diagonal_not_the_square_side() {
+        let settings = PatternSettings { square_px: 16.0, ..Default::default() };
+        assert!((settings.carrier_period_px() - 16.0 * SQRT_2).abs() < 1e-12);
+        // The distinction is the whole point: a detector given 16.0 would be wrong.
+        assert!(settings.carrier_period_px() > settings.square_px);
+    }
+
+    #[test]
+    fn checkerboard_rejects_an_unsupported_order_like_megarena() {
+        let settings = PatternSettings {
+            kind: PatternKind::Checkerboard,
+            order: 13,
+            ..Default::default()
+        };
+        let message = settings.render().expect_err("order 13 is above the supported range");
+        assert!(message.contains("4..=12"), "unhelpful message: {message}");
+    }
+
+    #[test]
+    fn checkerboard_snippet_switches_method_for_the_reference() {
+        let coded = PatternSettings { kind: PatternKind::Checkerboard, ..Default::default() };
+        assert!(coded.equivalent_rust().contains(".render("));
+
+        let plain = PatternSettings { plain_checkerboard: true, ..coded };
+        assert!(plain.equivalent_rust().contains(".render_plain("));
     }
 
     #[test]
