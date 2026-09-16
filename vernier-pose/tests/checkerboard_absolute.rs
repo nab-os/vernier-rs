@@ -330,3 +330,36 @@ fn decoder_refuses_a_lock_onto_the_code_line() {
         }
     }
 }
+
+#[test]
+fn reports_the_pattern_orientation_at_every_quarter() {
+    // The carrier runs at 45 degrees to the square edges; the reported angle
+    // must be the pattern's own, across all four quarter-turns and both
+    // layouts. It was once exactly 45 degrees high everywhere, and nothing
+    // caught it because every other test checks position only.
+    for layout in [CodeLayout::LatticeAxes, CodeLayout::Diagonals] {
+        let pattern = Checkerboard::new(SQUARE, ORDER).unwrap().with_code_layout(layout);
+        for degrees in [-170.0f64, -80.0, -30.0, 0.0, 3.0, 45.0, 70.0, 100.0, 150.0] {
+            let theta = degrees.to_radians();
+            let pose = PatternPose::new(123.4, -567.8, theta);
+            let image = pattern.render(SIZE, SIZE, &pose);
+            let detection = detect(&image);
+            let (recovered, _) =
+                solve_checkerboard_with_layout(&detection, image.as_slice(), SQUARE, ORDER, layout)
+                    .unwrap_or_else(|e| panic!("{layout:?} at {degrees} deg: {e}"));
+            let error = (recovered.theta - theta + std::f64::consts::PI)
+                .rem_euclid(std::f64::consts::TAU)
+                - std::f64::consts::PI;
+            assert!(
+                error.to_degrees().abs() < 0.05,
+                "{layout:?} at {degrees} deg: reported {:.3} deg",
+                recovered.theta.to_degrees()
+            );
+            assert!(
+                (-std::f64::consts::PI..=std::f64::consts::PI).contains(&recovered.theta),
+                "orientation not wrapped: {}",
+                recovered.theta
+            );
+        }
+    }
+}
