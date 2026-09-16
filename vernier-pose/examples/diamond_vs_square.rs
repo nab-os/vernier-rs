@@ -17,18 +17,16 @@
 //! position error.
 //!
 //! Output is CSV on stdout:
-//!   jitter_deg,family,variant,level,design,correct,detected,total,median_err_px,mean_check_bits
+//!   jitter_deg,family,variant,level,design,correct,wrong,detected,total,median_err_px,mean_check_bits
 //!
 //! Run with
 //!   cargo run --release --example diamond_vs_square -p vernier-pose -- 5 > dvs-5.csv
 
-use vernier_core::Complex32;
 use vernier_core::buffer::BufferLayout;
 use vernier_cpu::CpuBackend;
 use vernier_patterns::PatternPose;
 use vernier_patterns::checkerboard::{Checkerboard, CodeLayout};
-use vernier_pose::checkerboard::solve_checkerboard_with_layout;
-use vernier_spectral::spectrum::analyze_two;
+use vernier_pose::checkerboard::{detect_checkerboard, solve_checkerboard_with_layout};
 
 const SIZE: usize = 512;
 const ORDER: u32 = 8;
@@ -347,6 +345,8 @@ fn render_all(pattern: &Checkerboard, poses: &[PatternPose]) -> Vec<Vec<f32>> {
 
 struct Stats {
     correct: usize,
+    /// Decoded without error, to the wrong square: the dangerous outcome.
+    wrong: usize,
     detected: usize,
     median_err: f64,
     mean_bits: f64,
@@ -366,7 +366,7 @@ fn evaluate(
     let period_px = period as f64 * square;
     let chunk = poses.len().div_ceil(threads());
 
-    let per_thread: Vec<(usize, usize, Vec<f64>, f64)> = std::thread::scope(|scope| {
+    let per_thread: Vec<(usize, usize, Vec<f64>, f64, usize)> = std::thread::scope(|scope| {
         let handles: Vec<_> = poses
             .chunks(chunk)
             .enumerate()
@@ -374,7 +374,7 @@ fn evaluate(
                 scope.spawn(move || {
                     let backend = CpuBackend::new();
                     let buffer = BufferLayout::packed(SIZE, SIZE);
-                    let (mut correct, mut detected, mut errs, mut bits) = (0, 0, Vec::new(), 0.0);
+                    let (mut correct, mut detected, mut errs, mut bits, mut wrong) = (0, 0, Vec::new(), 0.0, 0);
                     for (offset, pose) in slice.iter().enumerate() {
                         let index = c * chunk + offset;
                         let mut image = renders[index].clone();
@@ -383,10 +383,8 @@ fn evaluate(
                             let seed = (variant.id() << 56) ^ (level.to_bits() >> 8) ^ index as u64;
                             degrade(&mut image, variant, level, seed);
                         }
-                        let complex: Vec<Complex32> =
-                            image.iter().map(|&v| Complex32::new(v, 0.0)).collect();
                         let Ok(detection) =
-                            analyze_two(&backend, &complex, buffer, 4.0, 10, 0, 0.0)
+                            detect_checkerboard(&backend, &image, buffer, 4.0, 10, 0, 0.0)
                         else {
                             continue;
                         };
@@ -411,9 +409,11 @@ fn evaluate(
                             };
                             let (ex, ey) = (wrap(recovered.x + pose.x), wrap(recovered.y + pose.y));
                             errs.push((ex * ex + ey * ey).sqrt());
+                        } else {
+                            wrong += 1;
                         }
                     }
-                    (correct, detected, errs, bits)
+                    (correct, detected, errs, bits, wrong)
                 })
             })
             .collect();
@@ -421,12 +421,14 @@ fn evaluate(
     });
 
     let correct: usize = per_thread.iter().map(|r| r.0).sum();
+    let wrong: usize = per_thread.iter().map(|r| r.4).sum();
     let detected: usize = per_thread.iter().map(|r| r.1).sum();
     let mut errs: Vec<f64> = per_thread.iter().flat_map(|r| r.2.iter().copied()).collect();
     errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let bits: f64 = per_thread.iter().map(|r| r.3).sum();
     Stats {
         correct,
+        wrong,
         detected,
         median_err: if errs.is_empty() { f64::NAN } else { errs[errs.len() / 2] },
         mean_bits: if correct > 0 { bits / correct as f64 } else { 0.0 },
@@ -450,11 +452,11 @@ fn main() {
             })
             .collect();
 
-    println!("jitter_deg,family,variant,level,design,correct,detected,total,median_err_px,mean_check_bits");
+    println!("jitter_deg,family,variant,level,design,correct,wrong,detected,total,median_err_px,mean_check_bits");
     let emit = |family: &str, variant: &str, level: f64, name: &str, s: &Stats| {
         println!(
-            "{jitter},{family},{variant},{level},{name},{},{},{POSES},{:.4},{:.2}",
-            s.correct, s.detected, s.median_err, s.mean_bits
+            "{jitter},{family},{variant},{level},{name},{},{},{},{POSES},{:.4},{:.2}",
+            s.correct, s.wrong, s.detected, s.median_err, s.mean_bits
         );
     };
 
