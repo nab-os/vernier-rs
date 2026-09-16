@@ -81,6 +81,7 @@ fn main() {
                 square_px: a.square,
                 code_size: a.code_size,
                 plain: a.plain,
+                diagonal_code: a.diagonal_code,
                 output: std::path::PathBuf::from(&a.output),
             };
             if let Err(e) = render_checkerboard::run(&args) {
