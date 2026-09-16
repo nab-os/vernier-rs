@@ -1,11 +1,4 @@
-//! Full absolute round trip for the coded checkerboard: render at a known pose,
-//! run two-direction detection, decode the code, and check the recovered
-//! absolute square index against the pose that was rendered.
-//!
-//! Unlike a self-consistency check, this compares against ground truth. The
-//! image centre of a pattern rendered at `pose` sits at pattern coordinates
-//! `(−pose.x, −pose.y)`, so the square it lands on is known exactly, and the
-//! decode has to name that square out of the `3·(2⁸−1) = 765` in the sequence.
+//! Render at a known pose, detect, decode, compare with the pose.
 
 use vernier_core::Complex32;
 use vernier_core::buffer::BufferLayout;
@@ -28,8 +21,7 @@ fn detect(image: &vernier_core::GrayImage) -> Detection {
     detect_checkerboard(&backend, image.as_slice(), layout, 4.0, 10, 0, 0.0).expect("two carrier peaks")
 }
 
-/// Unguarded detection, to check that the decoder refuses what the plain peak
-/// search can hand it.
+/// Plain peak search, without the sub-harmonic retry.
 fn detect_unguarded(image: &vernier_core::GrayImage) -> Detection {
     let backend = CpuBackend::new();
     let layout = BufferLayout::packed(SIZE, SIZE);
@@ -41,7 +33,6 @@ fn detect_unguarded(image: &vernier_core::GrayImage) -> Detection {
     analyze_two(&backend, &complex, layout, 4.0, 10, 0, 0.0).expect("two carrier peaks")
 }
 
-/// The square the image centre lands on, from the rendering pose alone.
 fn expected_square(pose: &PatternPose) -> (i64, i64) {
     (
         (-pose.x / SQUARE - 0.5).round() as i64,
@@ -79,8 +70,6 @@ fn assert_decodes_to_pose(pattern: &Checkerboard, pose: PatternPose) {
 #[test]
 fn decodes_the_absolute_square_at_many_translations() {
     let pattern = Checkerboard::new(SQUARE, ORDER).unwrap();
-    // Translations spread over hundreds of squares, deliberately not on square
-    // boundaries, so the sub-square phase is exercised too.
     for step in 0..12 {
         let pose = PatternPose::new(step as f64 * 137.0 + 3.3, step as f64 * -83.0 - 5.7, 0.0);
         assert_decodes_to_pose(&pattern, pose);
@@ -98,8 +87,6 @@ fn decodes_through_rotation() {
 
 #[test]
 fn recovers_sub_square_position_not_just_the_square() {
-    // The whole point of coarse+fine: the absolute position must be continuous,
-    // not quantized to the square grid.
     let pattern = Checkerboard::new(SQUARE, ORDER).unwrap();
     let mut worst = 0.0f64;
     for step in 0..8 {
@@ -125,8 +112,7 @@ fn recovers_sub_square_position_not_just_the_square() {
 
 #[test]
 fn rejects_an_image_with_no_code_in_view() {
-    // A field of view too small to hold order + spare bits must fail loudly
-    // rather than return a confident wrong answer.
+    // Too few squares in view: must error, not guess.
     let pattern = Checkerboard::new(28.0, ORDER).unwrap();
     let image = pattern.render(128, 128, &PatternPose::IDENTITY);
     let backend = CpuBackend::new();
@@ -137,7 +123,7 @@ fn rejects_an_image_with_no_code_in_view() {
         .map(|&v| Complex32::new(v, 0.0))
         .collect();
     let Ok(detection) = analyze_two(&backend, &complex, layout, 4.0, 4, 0, 0.0) else {
-        return; // No peaks at all is an acceptable failure for this case.
+        return;
     };
     assert!(
         extract_code(&detection, image.as_slice(), ORDER).is_err(),
@@ -145,11 +131,7 @@ fn rejects_an_image_with_no_code_in_view() {
     );
 }
 
-// --- diagonal code layout ---------------------------------------------------
-//
-// Same pattern geometry, code indexed along the carriers instead of the square
-// edges. Ground truth is identical: the layout changes which square carries
-// which bit, not where the squares are.
+// --- diagonal layout ---
 
 fn diagonal() -> Checkerboard {
     Checkerboard::new(SQUARE, ORDER)
@@ -177,7 +159,6 @@ fn diagonal_layout_decodes_through_rotation() {
 
 #[test]
 fn diagonal_layout_decodes_at_45_degrees() {
-    // The pose this layout exists for: diamond squares, upright code grid.
     let pattern = diagonal();
     let quarter = std::f64::consts::FRAC_PI_4;
     for step in 0..4 {
@@ -188,9 +169,6 @@ fn diagonal_layout_decodes_at_45_degrees() {
 
 #[test]
 fn the_layouts_do_not_decode_each_other() {
-    // The layouts put their coding sites in different places, so reading one
-    // with the other's rule must fail or land somewhere else -- never quietly
-    // agree, which would mean the layout parameter was doing nothing.
     let pose = PatternPose::new(311.0 + 3.3, -177.0 - 5.7, 0.0);
     let pattern = diagonal();
     let image = pattern.render(SIZE, SIZE, &pose);
@@ -220,10 +198,7 @@ fn the_layouts_do_not_decode_each_other() {
 
 #[test]
 fn diagonal_layout_recovers_sub_square_position() {
-    // Coarse code plus fine phase, for the diagonal layout: the absolute
-    // position must be continuous, not quantized to the square grid. This is
-    // the test that would catch a half-period slip in the (u, v) -> (i, j)
-    // conversion, which a square-index check alone can absorb.
+    // Catches a half-period slip in the (u, v) -> (i, j) conversion.
     let pattern = diagonal();
     let mut worst = 0.0f64;
     for step in 0..8 {
@@ -255,12 +230,7 @@ fn diagonal_layout_recovers_sub_square_position() {
 
 #[test]
 fn diagonal_layout_decodes_random_poses() {
-    // The fixed pose sets above all happened to give an even `Δu + Δv` before
-    // lifting, so they missed a decoder that rejected odd sums outright. That
-    // parity is only defined modulo an odd code period, and rejecting on it
-    // discarded the correct hypothesis about half the time. Random poses
-    // exercise both parities; with a 50% per-pose failure, 24 of them would
-    // all pass by chance with probability 2^-24.
+    // Hits both parities of Δu + Δv; the fixed poses above only hit even.
     let pattern = diagonal();
     let mut state: u64 = 0x2545_f491_4f6c_dd1d;
     let mut unit = move || {
@@ -279,11 +249,7 @@ fn diagonal_layout_decodes_random_poses() {
     }
 }
 
-// --- carrier locked onto the code's one-third line ---------------------------
-//
-// Five of 100 random clean poses once failed: the peak search took the line
-// the code puts at one third of each carrier for the carrier itself. One of
-// them decoded to a wrong position with no error. These are those poses.
+// --- detection locked onto the code's 1/3 line ---
 
 fn random_poses() -> Vec<PatternPose> {
     let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -303,6 +269,7 @@ fn random_poses() -> Vec<PatternPose> {
         .collect()
 }
 
+// Poses from `random_poses` that used to lock onto the 1/3 line.
 const SUBHARMONIC_POSES: [usize; 5] = [1, 27, 38, 52, 97];
 
 #[test]
@@ -320,7 +287,7 @@ fn guarded_detection_decodes_poses_that_lock_onto_the_code_line() {
 fn decoder_refuses_a_lock_onto_the_code_line() {
     let poses = random_poses();
     let pattern = Checkerboard::new(SQUARE, ORDER).unwrap();
-    // Pose 97 used to decode, confidently, to the wrong square.
+    // 97 used to decode to the wrong square.
     for &index in &[1usize, 97] {
         let image = pattern.render(SIZE, SIZE, &poses[index]);
         let detection = detect_unguarded(&image);
@@ -333,10 +300,7 @@ fn decoder_refuses_a_lock_onto_the_code_line() {
 
 #[test]
 fn reports_the_pattern_orientation_at_every_quarter() {
-    // The carrier runs at 45 degrees to the square edges; the reported angle
-    // must be the pattern's own, across all four quarter-turns and both
-    // layouts. It was once exactly 45 degrees high everywhere, and nothing
-    // caught it because every other test checks position only.
+    // Was once 45° off everywhere.
     for layout in [CodeLayout::LatticeAxes, CodeLayout::Diagonals] {
         let pattern = Checkerboard::new(SQUARE, ORDER).unwrap().with_code_layout(layout);
         for degrees in [-170.0f64, -80.0, -30.0, 0.0, 3.0, 45.0, 70.0, 100.0, 150.0] {

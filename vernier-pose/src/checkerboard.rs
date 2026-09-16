@@ -1,73 +1,12 @@
-//! Absolute decode for the coded checkerboard
-//! ([`vernier_patterns::checkerboard`]).
+//! Absolute decode for the coded checkerboard.
 //!
-//! The pattern's fine pose comes from the two diagonal carriers like any
-//! periodic pattern; this module recovers the missing integer part — *which*
-//! square of a 12 285-square-wide board the image centre is looking at.
+//! The carriers give the position inside a square; the code says which square.
 //!
-//! # The chain
-//!
-//! 1. **Sample.** The fitted phase planes map every pixel to a point on the
-//!    square lattice: with `s = φ₁/π` and `d = φ₂/π`, the continuous square
-//!    coordinates are `î = (s+d)/2`, `ĵ = (s−d)/2` — and `x = a(î + ½)`,
-//!    `y = a(ĵ + ½)`. Pixels near a lattice point (both residuals small) are
-//!    pooled into that square's mean intensity.
-//! 2. **Binarize.** Locally: each square is compared with the midpoint of the
-//!    median intensities of the two parity classes in its 7×7 neighbourhood.
-//!    The medians ignore the ~1/9 of squares the code inverts, and a local
-//!    threshold follows uneven illumination, which a single global one cannot.
-//! 3. **Parity-error map.** A square is a *defect* when its colour disagrees
-//!    with `(i+j) mod 2`. Only coding sites are ever defects, so this map is
-//!    ~1/9 dense. The opposite parity hypothesis gives an ~8/9-dense map, which
-//!    is how the black/white ambiguity resolves itself — no search needed.
-//! 4. **Locate the coding sites.** Averaging the defect map over `(i mod 3,
-//!    j mod 3)` lights up exactly two of the nine positions at ~50%, the other
-//!    seven at ~0. Whether a site carries the x or the y code is read off its
-//!    structure: an x site's defects depend only on `i`, so its per-column means
-//!    are 0 or 1 while its per-row means all sit at ~½.
-//! 5. **Read and localize.** One bit per supercell per axis; `order` bits locate
-//!    the window in the LFSR sequence.
-//!
-//! # Why the hypotheses must be over-determined
-//!
-//! A maximal LFSR of order `n` contains *every* non-zero `n`-bit word exactly
-//! once. So a window always localizes — including a window read in the wrong
-//! orientation, which localizes to the wrong place with full confidence. Single
-//! windows can therefore never be used to choose between hypotheses. Two things
-//! fix this here:
-//!
-//! - the relative offset of the two coding sites, `(0,1) − (1,0) ≡ (2,1) mod 3`,
-//!   is not invariant under rotation, so exactly one of the four quarter-turns
-//!   reproduces it;
-//! - every bit beyond the first `order` is a check bit. With `r` spare bits a
-//!   surviving wrong hypothesis is rejected with probability `1 − 2⁻ʳ`, and a
-//!   typical field of view leaves `r` in the tens.
-//!
-//! # Handedness has to be fixed before that works
-//!
-//! Rotations are not the only way the frame can arrive wrong. Both axes carry
-//! the *same* LFSR, which makes the pattern exactly invariant under transposing
-//! `i` and `j` — swap the two coding sites and their two codes and you get the
-//! pattern back. So a mirrored reading of the frame decodes just as
-//! convincingly as the true one, into a position reflected about the diagonal,
-//! and no amount of check bits will separate them.
-//!
-//! Nothing in the image is mirrored, though: the mirroring comes from the peak
-//! search, which may hand back the two carrier directions in either order. That
-//! is recoverable from the carriers themselves. The pattern's own gradients,
-//! `∇φ₁ = (π/a)(1, 1)` and `∇φ₂ = (π/a)(1, −1)`, have a negative cross product,
-//! and rotating the pattern does not change that sign. Measuring a positive one
-//! therefore means the directions came back swapped, and negating `φ₂` restores
-//! the pattern's own convention — after which only the four rotations remain.
-//!
-//! # Why parity is not used as a check
-//!
-//! It is tempting to demand that the frame offset preserve the checkerboard
-//! parity — that `Δi + Δj` be even — since the defect map is only sparse when it
-//! does. The check is invalid: the code period `3·(2ⁿ − 1)` is odd, so `Δi` is
-//! only known modulo an odd number and its parity depends on which
-//! representative the decode happened to return. Position is reported modulo one
-//! code period per axis, and the check bits do the discriminating.
+//! 1. Sample: map each pixel to a square through the two carrier phases.
+//! 2. Binarize each square against its neighbours.
+//! 3. Mark squares whose colour breaks the checkerboard parity: the coding sites.
+//! 4. Try every rotation and supercell offset, read the bits, find them in the LFSR.
+//! 5. Keep the best hypothesis if the evidence is strong and unambiguous.
 
 use std::collections::BTreeMap;
 
@@ -83,35 +22,21 @@ use vernier_spectral::spectrum::{Detection, analyze_two};
 use crate::Calibration;
 use crate::absolute::{CoarseDecoder, CoarseOrders};
 
-/// Half-width, in square units, of the window around a lattice point whose
-/// pixels are pooled into that square's sample. Kept well inside the square
-/// (whose cell in `(s, d)` is the diamond `|Δs| + |Δd| ≤ 1`) so edge pixels,
-/// which carry the transition, never enter a sample.
+/// Only pixels this close to a square centre are sampled (edges are blurry).
 const SAMPLE_RADIUS: Real = 0.35;
 
-/// Minimum pixels pooled before a square's mean is trusted.
 const MIN_SAMPLES: u64 = 4;
 
-/// Spare bits required beyond `order` on each axis. Three gives a 1-in-8 chance
-/// of a wrong hypothesis surviving *per candidate*, and there are only eight.
+/// Bits needed beyond `order` to check a placement.
 const MIN_SPARE_BITS: usize = 3;
 
-/// Fewest bits a winning hypothesis may get wrong, whatever the run length. Zero
-/// would be the strongest possible evidence but would also let one misread
-/// square — a speck of dust on one coding site — fail an otherwise unambiguous
-/// decode. Longer runs are allowed more; see [`allowed_bit_errors`].
+/// Bit errors always tolerated; long runs may tolerate more.
 const MAX_BIT_ERRORS: usize = 1;
 
-/// Largest acceptable chance that a wrong placement of one code passes the
-/// check bits by luck, counted over every anchor tried.
+/// Max chance that a wrong placement of one code passes by luck.
 const FALSE_ACCEPT_LIMIT: Real = 1e-4;
 
-/// The four index transforms `(i, j) → (m₀i + m₁j, m₂i + m₃j)` left once the
-/// carrier handedness is canonical: the quarter-turns. Their coding-site offsets
-/// are `(2,1)`, `(1,1)`, `(1,2)`, `(2,2)` — all different, so the offset alone
-/// names the quadrant. The mirrored four are excluded upstream by the `φ₂` sign
-/// fix, not here; including them would reintroduce an ambiguity the code cannot
-/// resolve.
+/// The four quarter-turns. Mirrors are ruled out earlier by `handedness`.
 const TRANSFORMS: [[i64; 4]; 4] = [
     [1, 0, 0, 1],   // identity
     [0, -1, 1, 0],  // +90°
@@ -119,50 +44,33 @@ const TRANSFORMS: [[i64; 4]; 4] = [
     [0, 1, -1, 0],  // −90°
 ];
 
-/// What the decode recovered.
 #[derive(Clone, Debug)]
 pub struct CheckerboardCode {
-    /// Index of the winning entry in [`TRANSFORMS`].
+    /// Index into `TRANSFORMS`.
     pub transform: usize,
-    /// Translation from the (transformed) measured frame to the pattern frame:
     /// `pattern = transform(measured) + delta`.
     pub delta: (i64, i64),
-    /// Absolute pattern square index under the image centre.
+    /// Square under the image centre.
     pub centre_square: (i64, i64),
-    /// Continuous pattern square coordinates `(î, ĵ)` of the image centre —
-    /// `centre_square` plus the sub-square part carried by the fine phase.
+    /// Same, with the sub-square position from the phases.
     pub centre: (Real, Real),
-    /// LFSR position of the x-direction window.
     pub k_x: i64,
-    /// LFSR position of the y-direction window.
     pub k_y: i64,
-    /// The `order` bits read along each direction.
     pub x_window: Vec<u8>,
-    /// The y-direction window.
     pub y_window: Vec<u8>,
-    /// Spare bits read beyond the `order` used to locate each window, both codes
-    /// together.
     pub check_bits: usize,
-    /// Spare bits that disagreed with the located sequence, per code.
     pub bit_errors: (usize, usize),
-    /// Chance that a wrong placement would have matched the sequence this well
-    /// by luck, both codes together and over every hypothesis tried. The
-    /// evidence the decode rests on: small is strong.
+    /// Chance a wrong hypothesis would match this well. Small is good.
     pub false_accept: Real,
-    /// [`false_accept`](Self::false_accept) of the strongest hypothesis that
-    /// puts the image centre on a *different* square, or infinity if none
-    /// localized. When this is credible too, the position is ambiguous.
+    /// `false_accept` of the best hypothesis on a different square.
     pub runner_up_false_accept: Real,
 }
 
-/// Coarse decoder over an already-extracted [`CheckerboardCode`], for the shared
-/// [`CoarseDecoder`] plumbing.
 pub struct CheckerboardDecoder {
     code: CheckerboardCode,
 }
 
 impl CheckerboardDecoder {
-    /// Wraps an extracted code.
     pub fn new(code: CheckerboardCode) -> Self {
         Self { code }
     }
@@ -178,30 +86,16 @@ impl CoarseDecoder for CheckerboardDecoder {
     }
 }
 
-/// Why a decode could not be produced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckerboardError {
-    /// No maximal LFSR is known for the requested order.
     UnsupportedOrder(u32),
-    /// Too few squares were sampled — occlusion, defocus, or a field of view
-    /// smaller than `3·(order + 3)` squares across.
     NotEnoughSquares,
-    /// No index transform reproduced the coding-site geometry, or none of the
-    /// surviving candidates passed the spare-bit check.
     NoConsistentHypothesis,
-    /// The detection locked onto the line the code puts at one third of a
-    /// carrier, not the carrier itself. Decoding it would at best fail and at
-    /// worst return a confident wrong position. [`detect_checkerboard`] retries
-    /// such a detection automatically.
+    /// Detection locked onto the code's 1/3-frequency line. Use `detect_checkerboard`.
     SubharmonicLock,
-    /// The best hypothesis matched the code no better than a wrong placement
-    /// would by chance ([`MAX_FALSE_ACCEPT`]). Returning it would report a
-    /// position with no real evidence behind it.
+    /// The code matched no better than chance.
     WeakEvidence,
-    /// A second hypothesis, placing the image centre on a different square, was
-    /// also credible. Heavy motion blur does this: it smears each coding site
-    /// into its neighbour along the blur, so the code reads almost as well one
-    /// square over. Picking one would be a guess.
+    /// Another square matched almost as well (e.g. heavy motion blur).
     AmbiguousPosition,
 }
 
@@ -240,8 +134,6 @@ impl std::fmt::Display for CheckerboardError {
 
 impl std::error::Error for CheckerboardError {}
 
-/// Reads the absolute code out of a completed [`Detection`] plus the spatial
-/// intensity image.
 pub fn extract_code(
     detection: &Detection,
     intensity: &[f32],
@@ -250,12 +142,6 @@ pub fn extract_code(
     extract_code_with_layout(detection, intensity, order, CodeLayout::LatticeAxes)
 }
 
-/// [`extract_code`] for a pattern whose code was written along `layout`.
-///
-/// The layout is not inferred. It could be — the two put their coding sites in
-/// different places, so the wrong one scores badly — but that would spend eight
-/// more hypotheses on a property the caller already knows, and a silent
-/// misdetection here returns a confident wrong position rather than an error.
 pub fn extract_code_with_layout(
     detection: &Detection,
     intensity: &[f32],
@@ -264,8 +150,6 @@ pub fn extract_code_with_layout(
 ) -> Result<CheckerboardCode, CheckerboardError> {
     let lfsr = Lfsr::maximal(order).ok_or(CheckerboardError::UnsupportedOrder(order))?;
 
-    // A lock onto the code's one-third line decodes, when it decodes at all, to
-    // a confidently wrong position; refuse it rather than report one.
     if subharmonic_ratios(detection, intensity)
         .iter()
         .any(|&r| r > SUBHARMONIC_LIMIT)
@@ -274,10 +158,6 @@ pub fn extract_code_with_layout(
     }
     let index = lfsr.window_index();
 
-    // Canonicalize the carrier handedness before anything reads the frame. The
-    // pattern's own (∇φ₁, ∇φ₂) pair has a negative cross product; a positive one
-    // means the peak search returned the directions swapped, and the frame is
-    // mirrored. Negating φ₂ undoes that, leaving only a rotation to find.
     let plane1 = &detection.dir1.plane;
     let plane2 = &detection.dir2.plane;
     let sign2 = handedness(detection);
@@ -295,13 +175,8 @@ pub fn extract_code_with_layout(
     }
     let white = binarize(&samples);
 
-    // The image centre in continuous square coordinates of the measured frame.
-    //
-    // The squares were keyed off the unwrapped phase *maps*, so the centre phase
-    // has to come from the same maps or the two disagree by whole turns — and a
-    // 2π error in direction 2 is a whole square of absolute position. The plane
-    // fit gives the low-noise value; the map at the centre pixel (the unwrap
-    // origin, hence the most trustworthy sample) gives the right multiple of 2π.
+    // Centre phase: the plane fit for precision, the map for the 2π multiple
+    // (the squares were indexed from the map).
     let centre_pixel = (detection.height / 2) * detection.width + detection.width / 2;
     let snap = |fitted: Real, measured: Real| fitted + TAU * ((measured - fitted) / TAU).round();
     let phase1 = snap(plane1.c, detection.phase1[centre_pixel]);
@@ -338,18 +213,12 @@ pub fn extract_code_with_layout(
     if best.false_accept > MAX_FALSE_ACCEPT {
         return Err(CheckerboardError::WeakEvidence);
     }
-    // Measured: among degraded decodes, a credible runner-up on another square
-    // accompanied 157 of 181 one-square-off results and 29 of 4,527 correct
-    // ones -- all 29 under motion blur long enough to make the code ambiguous.
     if best.runner_up_false_accept <= MAX_FALSE_ACCEPT {
         return Err(CheckerboardError::AmbiguousPosition);
     }
     Ok(best)
 }
 
-/// Whether `a` is better evidence than `b`: a smaller chance of passing by luck,
-/// then more check bits. Counting check bits alone ignored how many of them
-/// were wrong.
 fn stronger(a: &CheckerboardCode, b: &CheckerboardCode) -> bool {
     match a.false_accept.total_cmp(&b.false_accept) {
         std::cmp::Ordering::Less => true,
@@ -358,8 +227,7 @@ fn stronger(a: &CheckerboardCode, b: &CheckerboardCode) -> bool {
     }
 }
 
-/// Pools pixel intensities into the square each one sits in, keyed by the square
-/// indices the phase planes point at. Pixels near a square's edge are dropped.
+/// Mean intensity per square, using only pixels near each centre.
 fn accumulate_squares(
     phase1: &[Real],
     phase2: &[Real],
@@ -384,18 +252,9 @@ fn accumulate_squares(
     pools
 }
 
-/// Radius, in squares, of the neighbourhood that sets a square's local
-/// black/white threshold. Seven squares across follows an illumination ramp
-/// closely while still holding about 24 squares of each parity.
 const THRESHOLD_RADIUS: i64 = 3;
-
-/// Squares of each parity a neighbourhood needs before its medians are trusted.
-/// Near the edge of the view the neighbourhood is widened until it has them.
 const MIN_PER_PARITY: usize = 6;
-
-/// A square whose neighbourhood contrast is below this fraction of the typical
-/// contrast is dropped: its colour is a coin toss (a vignetted corner, a patch
-/// blurred flat), and a dropped vote is better than a random one.
+/// Squares with less local contrast than this (relative) are dropped.
 const MIN_RELATIVE_CONTRAST: Real = 0.15;
 
 fn median(values: &mut [Real]) -> Real {
@@ -404,33 +263,17 @@ fn median(values: &mut [Real]) -> Real {
     *m
 }
 
-/// Thresholds the pooled square means into colours, *locally*.
+/// Black/white per square, with a local threshold so uneven lighting is fine.
 ///
-/// One global threshold fails under uneven illumination: in the dark part of
-/// the frame white squares fall below it and read as black. Worse, the squares
-/// that vote on one code bit are correlated in position, so the misreads arrive
-/// together -- and for the diagonal layout, whose code bands are single-
-/// coloured, they invert whole bits.
-///
-/// So each square is judged against its own neighbourhood, using the
-/// checkerboard's structure. Squares of one parity share a colour and the other
-/// parity the other colour, except for the coding sites the code inverts --
-/// about one square in nine, a minority of each parity class. The *median* of
-/// each parity class therefore ignores the code and estimates the local black
-/// and white levels directly, and their midpoint is the threshold. It does not
-/// need to know which parity is white, and it follows any lighting that varies
-/// slowly over a few squares.
-///
-/// The minimum pool size adapts to the tile size. A fixed floor of
-/// `MIN_SAMPLES` pixels discarded almost every square below ~3.5 px tiles,
-/// where the sampling window holds only one or two pixel centres; half the
-/// typical pool size keeps the floor at `MIN_SAMPLES` for normal tiles and lets
-/// small ones through.
+/// Around each square, the median of each parity class gives the local black
+/// and white levels (the few code-flipped squares don't move a median). The
+/// threshold is their midpoint.
 fn binarize(samples: &BTreeMap<(i64, i64), (Real, u64)>) -> BTreeMap<(i64, i64), bool> {
     let mut counts: Vec<Real> = samples.values().map(|&(_, n)| n as Real).collect();
     if counts.is_empty() {
         return BTreeMap::new();
     }
+    // Small tiles only get a pixel or two per square, so scale the minimum.
     let typical_count = median(&mut counts);
     let min_count = ((typical_count / 2.0).floor() as u64).clamp(1, MIN_SAMPLES);
 
@@ -443,7 +286,6 @@ fn binarize(samples: &BTreeMap<(i64, i64), (Real, u64)>) -> BTreeMap<(i64, i64),
         return BTreeMap::new();
     }
 
-    // Dense grid over the sampled squares, for neighbourhood lookups.
     let (i_min, i_max) = means.keys().fold((i64::MAX, i64::MIN), |(lo, hi), &(i, _)| (lo.min(i), hi.max(i)));
     let (j_min, j_max) = means.keys().fold((i64::MAX, i64::MIN), |(lo, hi), &(_, j)| (lo.min(j), hi.max(j)));
     let width = (i_max - i_min + 1) as usize;
@@ -498,37 +340,25 @@ fn binarize(samples: &BTreeMap<(i64, i64), (Real, u64)>) -> BTreeMap<(i64, i64),
         .collect()
 }
 
-/// Sign applied to `φ₂` to make the carrier frame right-handed; see the module
-/// docs on handedness.
+/// -1 if the peak search returned the carriers swapped (a mirrored frame).
 fn handedness(detection: &Detection) -> Real {
     let (p1, p2) = (&detection.dir1.plane, &detection.dir2.plane);
     if p1.a * p2.b - p1.b * p2.a > 0.0 { -1.0 } else { 1.0 }
 }
 
-/// Largest ratio a true carrier lock reaches between the image's amplitude at
-/// three times a carrier's frequency and at the carrier itself. On a true lock
-/// that is the pattern's third harmonic, about 1/9 (measured 0.09-0.14 clean,
-/// 0.20 under heavy noise); on a lock onto the code's one-third line it is the
-/// true carrier, 1.3-3.1 measured even under blur, noise and illumination ramps.
+/// True locks measure ~0.1, false locks 1.3 and up.
 const SUBHARMONIC_LIMIT: Real = 0.5;
 
 fn signed_bin(bin: usize, n: usize) -> i64 {
     if bin > n / 2 { bin as i64 - n as i64 } else { bin as i64 }
 }
 
-/// Hann-windowed spectral amplitudes of one image at chosen FFT bins.
-///
-/// The windowed, mean-removed image is built once; each amplitude is then a
-/// separable sum. Because `e^{-i(fx·x + fy·y)}` factors into a column term and
-/// a row term, every row is first collapsed against the column phasors and
-/// the row sums are combined with the row phasors — two passes of plain
-/// multiply-adds per frequency, with no trigonometry per pixel.
+/// Hann-windowed amplitude of an image at given FFT bins, without a full FFT.
 struct Demodulator {
     width: usize,
     height: usize,
     xs: Vec<Real>,
     ys: Vec<Real>,
-    /// Windowed, mean-removed samples on the subsampled grid, row-major.
     samples: Vec<Real>,
 }
 
@@ -555,6 +385,7 @@ impl Demodulator {
         }
     }
 
+    // The phasor factors into row and column terms, so no trig per pixel.
     fn amplitude(&self, bx: i64, by: i64) -> Real {
         let fx = TAU * bx as Real / self.width as Real;
         let fy = TAU * by as Real / self.height as Real;
@@ -569,7 +400,6 @@ impl Demodulator {
                 rs += row[k] * sx[k];
             }
             let (cy, sy) = ((fy * y).cos(), (fy * y).sin());
-            // cos(a+b) = cos a cos b − sin a sin b;  sin(a+b) = sin a cos b + cos a sin b
             re += cy * rc - sy * rs;
             im -= cy * rs + sy * rc;
         }
@@ -577,21 +407,11 @@ impl Demodulator {
     }
 }
 
-/// Per-carrier ratio of the image's amplitude at three times the detected peak
-/// to its amplitude at the peak itself; see [`SUBHARMONIC_LIMIT`].
+/// For each carrier: amplitude at 3× its frequency over amplitude at it.
 ///
-/// The code the checkerboard carries puts a spectral line at exactly one third
-/// of each carrier, in the same direction: the coding sites repeat every three
-/// squares, on top of the checkerboard's own alternation. When the bits in
-/// view make that line stronger than the carrier's own peak -- or blur, which
-/// attenuates the carrier more than the lower line, makes it so -- the peak
-/// search locks onto it. Everything downstream then samples squares three times
-/// too big and either fails or, worse, decodes to a wrong position with full
-/// confidence. On a true lock, three times the frequency is the pattern's third
-/// harmonic, about a ninth as strong; on a false one it is the true carrier.
-///
-/// Three times a peak beyond Nyquist cannot be a sub-harmonic lock (the true
-/// carrier would have to be above Nyquist), so such a carrier scores zero.
+/// The code puts a line at 1/3 of each carrier. If detection picked that line,
+/// 3× lands on the real carrier and the ratio is large. On a real lock, 3× is
+/// the third harmonic, about 1/9.
 pub fn subharmonic_ratios(detection: &Detection, intensity: &[f32]) -> [Real; 2] {
     let (w, h) = (detection.width, detection.height);
     [detection.dir1.peak_bin, detection.dir2.peak_bin].map(|(px, py)| {
@@ -600,12 +420,10 @@ pub fn subharmonic_ratios(detection: &Detection, intensity: &[f32]) -> [Real; 2]
         if tx.abs() + 2 >= (w / 2) as i64 || ty.abs() + 2 >= (h / 2) as i64 {
             return 0.0;
         }
-        // Subsampling by two is safe while everything stays under half Nyquist.
         let step = if tx.abs() + 2 < (w / 4) as i64 && ty.abs() + 2 < (h / 4) as i64 { 2 } else { 1 };
         let demod = Demodulator::new(intensity, w, h, step);
         let base = demod.amplitude(bx, by);
         let mut third: Real = 0.0;
-        // The peak bin is exact to +-0.5 bin, so three times it to +-1.5.
         for dy in -2..=2 {
             for dx in -2..=2 {
                 third = third.max(demod.amplitude(tx + dx, ty + dy));
@@ -615,16 +433,7 @@ pub fn subharmonic_ratios(detection: &Detection, intensity: &[f32]) -> [Real; 2]
     })
 }
 
-/// Two-carrier detection for the coded checkerboard, guarded against locking
-/// onto the code's one-third line.
-///
-/// Runs [`analyze_two`]; if a carrier looks like a sub-harmonic lock (see
-/// [`subharmonic_ratios`]), runs it again with the minimum frequency raised
-/// above that false peak -- the true carrier sits at three times its radius --
-/// and keeps whichever detection is the better lock. Callers that detect with
-/// `analyze_two` directly still get a
-/// [`CheckerboardError::SubharmonicLock`] from the decoder rather than a wrong
-/// position, but they miss the retry.
+/// `analyze_two`, retried above the peak if it locked onto the code's 1/3 line.
 pub fn detect_checkerboard<B: ComputeBackend>(
     backend: &B,
     intensity: &[f32],
@@ -651,7 +460,7 @@ pub fn detect_checkerboard<B: ComputeBackend>(
             ((bx * bx + by * by) as Real).sqrt()
         })
         .fold(0.0, Real::max);
-    // Between the false line (r) and the true carrier (3r).
+    // Search between the false line (r) and the real carrier (3r).
     let raised = min_frequency.max((2.0 * false_radius).ceil() as usize);
     let Ok(second) = analyze_two(backend, &complex, layout, sigma, raised, max_frequency, smoothing_sigma)
     else {
@@ -661,12 +470,7 @@ pub fn detect_checkerboard<B: ComputeBackend>(
     if worst(&second) < worst(&first) { Ok(second) } else { Ok(first) }
 }
 
-/// The coordinates a layout indexes its code in, for a square at `(i, j)`.
-///
-/// Everything upstream of this — sampling, binarizing, the parity hypothesis,
-/// the quarter-turn search — is about the checkerboard itself and is identical
-/// for both layouts. Only *which square carries which bit* differs, and that is
-/// entirely a question of the frame the residues and supercells are counted in.
+/// Coordinates the code is counted in: `(i, j)`, or `(i+j, i-j)` for diagonals.
 fn code_coords(layout: CodeLayout, i: i64, j: i64) -> (i64, i64) {
     match layout {
         CodeLayout::LatticeAxes => (i, j),
@@ -674,7 +478,6 @@ fn code_coords(layout: CodeLayout, i: i64, j: i64) -> (i64, i64) {
     }
 }
 
-/// The two coding-site residues a layout places within a supercell.
 fn layout_sites(layout: CodeLayout) -> ((i64, i64), (i64, i64)) {
     match layout {
         CodeLayout::LatticeAxes => (X_SITE, Y_SITE),
@@ -682,11 +485,9 @@ fn layout_sites(layout: CodeLayout) -> ((i64, i64), (i64, i64)) {
     }
 }
 
-/// The defect map of one rotated frame: every sampled square, and whether its
-/// colour disagrees with the checkerboard parity.
+/// Every square in one rotated frame, and whether it breaks the parity.
 struct DefectMap {
     squares: Vec<((i64, i64), bool)>,
-    /// Shift applied to `i` to make the parity hypothesis the sparse one.
     parity_shift: i64,
 }
 
@@ -702,20 +503,13 @@ fn try_transform(
 ) -> Vec<CheckerboardCode> {
     let map = build_defect_map(white, matrix);
 
-    // A coded checkerboard defects about 1 square in 9. Far off that and this is
-    // not one — or the binarization failed — so don't spend 9 hypotheses on it.
+    // About 1 square in 9 should be a defect.
     let rate = map.squares.iter().filter(|&&(_, defect)| defect).count() as Real
         / map.squares.len() as Real;
     if !(0.02..0.30).contains(&rate) {
         return Vec::new();
     }
 
-    // The frame offset is only known modulo the supercell, so try all nine. Each
-    // choice says exactly which squares carry the x code and which the y, and the
-    // check bits say whether it was right. Reading the sites this way — rather
-    // than looking for whichever positions defect most — survives the stretches
-    // of the sequence that are almost all ones, where the coding sites are
-    // indistinguishable from ordinary squares by defect rate alone.
     let mut candidates = Vec::new();
     for delta_i_residue in 0..CELL {
         for delta_j_residue in 0..CELL {
@@ -735,13 +529,8 @@ fn try_transform(
     candidates
 }
 
-/// Rotates the sampled squares into one candidate frame and marks the squares
-/// whose colour disagrees with the checkerboard parity.
-///
-/// The parity hypothesis is not searched: only coding sites are ever painted
-/// against parity, so the right hypothesis defects about 1 square in 9 and the
-/// wrong one about 8 in 9. Shifting `i` by one flips between them, and the shift
-/// is folded into the frame offset later.
+/// Rotates the squares and marks parity defects. The parity choice that gives
+/// fewer defects is the right one.
 fn build_defect_map(white: &BTreeMap<(i64, i64), bool>, matrix: &[i64; 4]) -> DefectMap {
     let apply = |i: i64, j: i64| (matrix[0] * i + matrix[1] * j, matrix[2] * i + matrix[3] * j);
     let transformed: Vec<((i64, i64), bool)> = white
@@ -772,9 +561,7 @@ fn build_defect_map(white: &BTreeMap<(i64, i64), bool>, matrix: &[i64; 4]) -> De
     }
 }
 
-/// Tests one frame-offset hypothesis: given `delta_residue = (Δi, Δj) mod 3`,
-/// the coding sites sit at known residues, so their bits can simply be read and
-/// checked against the sequence.
+/// Reads both codes assuming the supercells start at `delta_residue`.
 #[allow(clippy::too_many_arguments)]
 fn try_origin(
     map: &DefectMap,
@@ -787,7 +574,6 @@ fn try_origin(
     index: &WindowIndex,
     order: u32,
 ) -> Option<CheckerboardCode> {
-    // pattern = ours + delta, so a site at pattern residue r sits at ours r − Δ.
     let site_residue = |pattern: (i64, i64)| {
         (
             (pattern.0 - delta_residue.0).rem_euclid(CELL),
@@ -803,27 +589,12 @@ fn try_origin(
     let (k_x, x_checks, x_errors) = localize(&x_bits, lfsr, index, order)?;
     let (k_y, y_checks, y_errors) = localize(&y_bits, lfsr, index, order)?;
 
-    // The first read supercell of each axis is LFSR position k, so the pattern
-    // index of its coding square is 3k + the site's offset in the supercell.
-    // The site's residue is what put it in this hypothesis, so `delta` lands on
-    // `delta_residue` mod 3 by construction — nothing to re-check there.
-    //
-    // These are offsets in the *code* frame, which is `(i, j)` for the lattice
-    // layout and `(u, v) = (i+j, i−j)` for the diagonal one.
+    // Offset from our frame to the pattern's, in code coordinates.
     let delta_a = (CELL * k_x + site_a.0) - (CELL * x_first_cell + a_residue.0);
     let delta_b = (CELL * k_y + site_b.1) - (CELL * y_first_cell + b_residue.1);
 
-    // Back into `(i, j)`. A real frame offset is an integer translation of the
-    // square lattice, so in `(u, v)` it always has `Δu + Δv = 2Δi` — even.
-    //
-    // But `delta_a` and `delta_b` come from LFSR positions, so they are only
-    // known modulo one code period `P = 3·(2ⁿ−1)`, and `P` is odd: the true
-    // `Δu` may be `delta_a + P`, with the opposite parity. An odd sum therefore
-    // does not mean a wrong hypothesis — rejecting it discarded the correct one
-    // about half the time, which is what 100 random poses exposed and 8 fixed
-    // ones did not. Lift instead: adding `P` to `delta_b` restores the parity,
-    // and the two possible lifts differ by exactly `P` in `(i, j)`, which the
-    // wrap below removes, so the answer modulo `P` is unique.
+    // Diagonal layout: back to (i, j). The deltas are only known modulo an odd
+    // period, so if their sum is odd, shift one by a period to make it even.
     let (delta_i, delta_j) = match layout {
         CodeLayout::LatticeAxes => (delta_a, delta_b),
         CodeLayout::Diagonals => {
@@ -842,15 +613,7 @@ fn try_origin(
         matrix[0] as Real * i + matrix[1] as Real * j + (map.parity_shift + delta_i) as Real;
     let raw_j = matrix[2] as Real * i + matrix[3] as Real * j + delta_j as Real;
 
-    // Position is known modulo one code period per code axis, and for both
-    // layouts that comes to the same wrap in `(i, j)`.
-    //
-    // For the diagonal layout that is worth spelling out, because wrapping `u`
-    // and `v` separately is wrong: `period = 3·(2ⁿ−1)` is odd, so a lone period
-    // of `u` flips the `u ≡ v (mod 2)` parity and names no square. Only offsets
-    // with `Δu ≡ Δv (mod 2)` are real, so the ambiguity lattice is generated by
-    // `(P, P)` and `(P, −P)` — which in `(i, j)` is exactly `(P, 0)` and
-    // `(0, P)`, the same lattice the axis layout wraps against.
+    // Wrap to one code period, in (i, j) for both layouts.
     let period = (CELL * lfsr.len() as i64) as Real;
     let wrap = |value: Real| value - period * (value / period).floor();
     let (centre_i, centre_j) = (wrap(raw_i), wrap(raw_j));
@@ -871,10 +634,8 @@ fn try_origin(
     })
 }
 
-/// Majority-votes one bit per supercell from the squares at `residue`, and
-/// returns the longest run of consecutive supercells with the index of its first
-/// cell. `by_i` selects which axis indexes the supercells: the x code runs along
-/// `i`, the y code along `j`.
+/// One bit per supercell by majority vote; returns the longest consecutive run
+/// and the index of its first supercell.
 fn read_site_bits(
     map: &DefectMap,
     layout: CodeLayout,
@@ -893,7 +654,7 @@ fn read_site_bits(
         entry.1 += 1;
     }
 
-    // A defect means the site was painted against parity, which is the `0` bit.
+    // A defect is a 0 bit.
     let bits: Vec<(i64, u8)> = votes
         .into_iter()
         .map(|(cell, (defective, total))| (cell, u8::from(2 * defective <= total)))
@@ -922,18 +683,8 @@ fn read_site_bits(
     ))
 }
 
-/// How many bits of a run of `bits` a placement may get wrong and still pass.
-///
-/// A fixed allowance of one is right for a short run and far too strict for a
-/// long one: a clean image read in the diagonal layout returns ~36 bits per
-/// code, and two misread cells at the edge of the view were enough to reject
-/// the true placement, while every wrong placement disagreed on 9–12 bits.
-///
-/// So the allowance is the most errors for which a *wrong* placement — whose
-/// check bits agree with the sequence at random — would still pass with a
-/// probability under [`FALSE_ACCEPT_LIMIT`], counting every anchor `localize`
-/// tries. For 36 bits that is 2; for the ~21 bits of a typical lattice read it
-/// stays at [`MAX_BIT_ERRORS`].
+/// Bit errors tolerated for a run of `bits`: grows with length, but a wrong
+/// placement must still pass by luck less than `FALSE_ACCEPT_LIMIT`.
 fn allowed_bit_errors(bits: usize, order: usize) -> usize {
     let spare = bits.saturating_sub(order);
     let mut allowed = MAX_BIT_ERRORS;
@@ -946,9 +697,8 @@ fn allowed_bit_errors(bits: usize, order: usize) -> usize {
     allowed
 }
 
-/// Chance that one code read at a *wrong* placement — whose `spare` check bits
-/// agree with the sequence at random — shows at most `errors` disagreements,
-/// over the `spare + 1` anchors `localize` tries. Capped at one.
+/// Chance that random check bits match with at most `errors` misses, over all
+/// anchors tried.
 fn chance_by_luck(spare: usize, errors: usize) -> Real {
     let (mut cumulative, mut choose) = (0.0, 1.0);
     for k in 0..=errors.min(spare) {
@@ -960,25 +710,13 @@ fn chance_by_luck(spare: usize, errors: usize) -> Real {
     (cumulative * (0.5 as Real).powi(spare as i32) * (spare + 1) as Real).min(1.0)
 }
 
-/// Largest [`CheckerboardCode::false_accept`] a decode may report.
-///
-/// Measured over 4,832 decodes of degraded images: every correct decode was at
-/// most 10^-2.2, while every decode that landed far from the truth was at
-/// 10^1.3 or above — no evidence at all, a short garbage read passing by chance
-/// under heavy blur. The limit sits between them with a wide margin both ways.
+/// Correct decodes measured ≤ 0.006, garbage ones ≥ 20.
 const MAX_FALSE_ACCEPT: Real = 0.1;
 
-/// Hypotheses `extract_code` tries: four quarter-turns times nine frame offsets.
 const HYPOTHESES: Real = (TRANSFORMS.len() as i64 * CELL * CELL) as Real;
 
-/// Locates the bit run in the sequence and scores it against every spare bit.
-///
-/// Every window of `order` bits localizes, so a single anchor cannot be trusted:
-/// one misread bit inside it sends the whole run to the wrong place. Each
-/// possible anchor is therefore tried and scored over the *whole* run, and the
-/// best is kept only if it explains all but [`MAX_BIT_ERRORS`] of the bits.
-/// Returns the LFSR position of the run's first bit and the spare-bit count that
-/// backs it.
+/// Finds the bit run in the LFSR, trying every anchor and scoring the whole run.
+/// Returns (position of first bit, spare bits, errors).
 fn localize(bits: &[u8], lfsr: &Lfsr, index: &WindowIndex, order: u32) -> Option<(i64, usize, usize)> {
     let order = order as usize;
     if bits.len() < order + MIN_SPARE_BITS {
@@ -1010,12 +748,7 @@ fn localize(bits: &[u8], lfsr: &Lfsr, index: &WindowIndex, order: u32) -> Option
     Some((first, bits.len() - order, errors))
 }
 
-/// Absolute pose from a completed detection: the code fixes which square the
-/// image centre sits on, the fine phase places it within that square.
-///
-/// `square_size` is the physical side of one checkerboard square (the carrier
-/// period a detector is calibrated with is `square_size·√2`). Positions come
-/// back in the same unit.
+/// Absolute pose. `square_size` is the side of one square.
 pub fn solve_checkerboard(
     detection: &Detection,
     intensity: &[f32],
@@ -1031,11 +764,6 @@ pub fn solve_checkerboard(
     )
 }
 
-/// [`solve_checkerboard`] for a pattern whose code was written along `layout`.
-///
-/// Only the coarse stage depends on the layout. The fine pose comes from the
-/// carrier phases, and those are set by the square geometry, which both layouts
-/// share — so everything below the `extract_code` call is common.
 pub fn solve_checkerboard_with_layout(
     detection: &Detection,
     intensity: &[f32],
@@ -1045,15 +773,10 @@ pub fn solve_checkerboard_with_layout(
 ) -> Result<(Pose, CheckerboardCode), CheckerboardError> {
     let code = extract_code_with_layout(detection, intensity, order, layout)?;
 
-    // x = a(î + ½), y = a(ĵ + ½) — the inverse of the pattern's phase definition.
     let x = square_size * (code.centre.0 + 0.5);
     let y = square_size * (code.centre.1 + 0.5);
 
-    // Orientation: the fine plane angle, turned by the quarter-turn the winning
-    // transform undid -- and by the 45° between the carrier and the square
-    // edges. The plane measures carrier 1, whose gradient in the pattern frame
-    // is (π/a)(1, 1): at pattern orientation 0 it reads 45°. Leaving that out
-    // reported every orientation exactly 45° too high.
+    // The carrier runs at 45° to the squares, then undo the decoded quarter-turn.
     let quadrant = (code.transform % 4) as Real;
     let raw = detection.dir1.plane.orientation() - PI / 4.0 - quadrant * (PI / 2.0);
     let theta = raw - TAU * ((raw + PI) / TAU).floor();
@@ -1064,14 +787,13 @@ pub fn solve_checkerboard_with_layout(
     Ok((Pose::new_2d(x, y, theta, pixel_size), code))
 }
 
-/// Convenience wrapper matching the megarena entry point's shape.
 pub fn solve(
     detection: &Detection,
     intensity: &[f32],
     calib: &Calibration,
     order: u32,
 ) -> Result<Pose, CheckerboardError> {
-    // `Calibration::period` is the carrier period; the square side is that over √2.
+    // `period` is the carrier period; the square side is that over √2.
     let square_size = calib.period / core::f64::consts::SQRT_2;
     solve_checkerboard(detection, intensity, square_size, order).map(|(pose, _)| pose)
 }
@@ -1081,7 +803,6 @@ mod tests {
     use super::*;
 
 
-    /// The per-pixel sum the separable demodulator replaces.
     fn naive_amplitude(intensity: &[f32], width: usize, height: usize, bx: i64, by: i64, step: usize) -> Real {
         let mean = intensity.iter().map(|&v| v as Real).sum::<Real>() / intensity.len() as Real;
         let (fx, fy) = (TAU * bx as Real / width as Real, TAU * by as Real / height as Real);
@@ -1120,14 +841,10 @@ mod tests {
 
     #[test]
     fn short_garbage_reads_fail_the_evidence_gate_and_real_reads_pass() {
-        // What heavy defocus produced before the gate: ~15 bits per code, one
-        // error each -- a wrong placement matches that easily.
         let garbage = chance_by_luck(7, 1) * chance_by_luck(7, 1) * HYPOTHESES;
         assert!(garbage > MAX_FALSE_ACCEPT, "garbage read scored {garbage}");
-        // A typical clean read: ~26 bits per code, no errors.
         let clean = chance_by_luck(18, 0) * chance_by_luck(18, 0) * HYPOTHESES;
         assert!(clean < 1e-6, "clean read scored {clean}");
-        // One error on each code of a typical read is still strong evidence.
         let noisy = chance_by_luck(18, 1) * chance_by_luck(18, 1) * HYPOTHESES;
         assert!(noisy < MAX_FALSE_ACCEPT, "noisy read scored {noisy}");
     }
@@ -1137,7 +854,6 @@ mod tests {
         assert_eq!(allowed_bit_errors(8, 8), MAX_BIT_ERRORS);
         assert_eq!(allowed_bit_errors(21, 8), MAX_BIT_ERRORS);
         assert_eq!(allowed_bit_errors(36, 8), 2);
-        // Never below the old floor, and monotone in the run length.
         let mut previous = 0;
         for bits in 8..80 {
             let allowed = allowed_bit_errors(bits, 8);
