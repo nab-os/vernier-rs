@@ -1050,9 +1050,13 @@ pub fn solve_checkerboard_with_layout(
     let y = square_size * (code.centre.1 + 0.5);
 
     // Orientation: the fine plane angle, turned by the quarter-turn the winning
-    // transform undid.
+    // transform undid -- and by the 45° between the carrier and the square
+    // edges. The plane measures carrier 1, whose gradient in the pattern frame
+    // is (π/a)(1, 1): at pattern orientation 0 it reads 45°. Leaving that out
+    // reported every orientation exactly 45° too high.
     let quadrant = (code.transform % 4) as Real;
-    let theta = detection.dir1.plane.orientation() - quadrant * (PI / 2.0);
+    let raw = detection.dir1.plane.orientation() - PI / 4.0 - quadrant * (PI / 2.0);
+    let theta = raw - TAU * ((raw + PI) / TAU).floor();
 
     let gradient = (detection.dir1.plane.a.powi(2) + detection.dir1.plane.b.powi(2)).sqrt();
     let pixel_size = square_size * core::f64::consts::SQRT_2 * gradient / TAU;
