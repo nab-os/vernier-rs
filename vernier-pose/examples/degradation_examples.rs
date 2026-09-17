@@ -284,12 +284,8 @@ fn decodes(image: &[f32], pattern: &Checkerboard, square: f64, pose: &PatternPos
         return false;
     };
     // Within half a square of the truth, modulo one code period.
-    let period_px = (3 * pattern.code().len()) as f64 * square;
-    let wrap = |e: f64| {
-        let e = e.rem_euclid(period_px);
-        e.min(period_px - e)
-    };
-    wrap(recovered.x + pose.x) < 0.5 * square && wrap(recovered.y + pose.y) < 0.5 * square
+    let (ex, ey) = pattern.wrap_offset(recovered.x + pose.x, recovered.y + pose.y);
+    ex.abs() < 0.5 * square && ey.abs() < 0.5 * square
 }
 
 fn slug(s: &str) -> String {
@@ -304,8 +300,8 @@ fn main() {
 
     let (x, y, d) = pose_offset();
     let designs = [
-        ("square", CodeLayout::LatticeAxes, 0.0),
-        ("diamond", CodeLayout::Diagonals, std::f64::consts::FRAC_PI_4),
+        ("square", CodeLayout::Squares, 0.0),
+        ("diamond", CodeLayout::Diamonds, 0.0),
     ];
 
     for (name, layout, nominal) in designs {

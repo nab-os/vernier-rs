@@ -240,11 +240,9 @@ pub struct RenderCheckerboardArgs {
     #[argh(switch)]
     pub plain: bool,
 
-    /// index the code along the lattice diagonals (parallel to the carriers)
-    /// instead of the square edges; with --theta pi/4 this gives diamond
-    /// squares with an upright code grid
+    /// diamonds: squares turned 45 degrees, code grid upright
     #[argh(switch)]
-    pub diagonal_code: bool,
+    pub diamonds: bool,
 }
 
 /// Generate the explainer figures and measurements for the coded checkerboard.

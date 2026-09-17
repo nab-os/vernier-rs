@@ -33,11 +33,10 @@ fn detect_unguarded(image: &vernier_core::GrayImage) -> Detection {
     analyze_two(&backend, &complex, layout, 4.0, 10, 0, 0.0).expect("two carrier peaks")
 }
 
-fn expected_square(pose: &PatternPose) -> (i64, i64) {
-    (
-        (-pose.x / SQUARE - 0.5).round() as i64,
-        (-pose.y / SQUARE - 0.5).round() as i64,
-    )
+/// Square under the image centre, which sits at pattern point `(-x, -y)`.
+fn expected_square(pattern: &Checkerboard, pose: &PatternPose) -> (i64, i64) {
+    let (x, y) = pattern.code_layout().to_lattice(-pose.x, -pose.y);
+    ((x / SQUARE - 0.5).round() as i64, (y / SQUARE - 0.5).round() as i64)
 }
 
 fn assert_decodes_to_pose(pattern: &Checkerboard, pose: PatternPose) {
@@ -52,7 +51,7 @@ fn assert_decodes_to_pose(pattern: &Checkerboard, pose: PatternPose) {
     .unwrap_or_else(|e| panic!("decode failed at {pose:?} [{:?}]: {e}", pattern.code_layout()));
 
     let period = 3 * pattern.code().len() as i64;
-    let (want_i, want_j) = expected_square(&pose);
+    let (want_i, want_j) = expected_square(pattern, &pose);
     let (got_i, got_j) = code.centre_square;
     assert_eq!(
         (
@@ -96,12 +95,8 @@ fn recovers_sub_square_position_not_just_the_square() {
         let (recovered, _) = solve_checkerboard(&detection, image.as_slice(), SQUARE, ORDER)
             .unwrap_or_else(|e| panic!("solve failed at {pose:?}: {e}"));
 
-        let period = 3.0 * pattern.code().len() as f64 * SQUARE;
-        let error_x = (recovered.x - -pose.x).rem_euclid(period);
-        let error_y = (recovered.y - -pose.y).rem_euclid(period);
-        let error_x = error_x.min(period - error_x);
-        let error_y = error_y.min(period - error_y);
-        worst = worst.max(error_x).max(error_y);
+        let (error_x, error_y) = pattern.wrap_offset(recovered.x + pose.x, recovered.y + pose.y);
+        worst = worst.max(error_x.abs()).max(error_y.abs());
     }
     assert!(
         worst < 0.25,
@@ -131,17 +126,17 @@ fn rejects_an_image_with_no_code_in_view() {
     );
 }
 
-// --- diagonal layout ---
+// --- diamonds ---
 
-fn diagonal() -> Checkerboard {
+fn diamonds() -> Checkerboard {
     Checkerboard::new(SQUARE, ORDER)
         .unwrap()
-        .with_code_layout(CodeLayout::Diagonals)
+        .with_code_layout(CodeLayout::Diamonds)
 }
 
 #[test]
-fn diagonal_layout_decodes_the_absolute_square_at_many_translations() {
-    let pattern = diagonal();
+fn diamonds_decode_the_absolute_square_at_many_translations() {
+    let pattern = diamonds();
     for step in 0..12 {
         let pose = PatternPose::new(step as f64 * 137.0 + 3.3, step as f64 * -83.0 - 5.7, 0.0);
         assert_decodes_to_pose(&pattern, pose);
@@ -149,8 +144,8 @@ fn diagonal_layout_decodes_the_absolute_square_at_many_translations() {
 }
 
 #[test]
-fn diagonal_layout_decodes_through_rotation() {
-    let pattern = diagonal();
+fn diamonds_decode_through_rotation() {
+    let pattern = diamonds();
     for (index, theta) in [0.12, 0.55, -0.31, 0.79].into_iter().enumerate() {
         let pose = PatternPose::new(index as f64 * 61.0 + 2.5, index as f64 * 47.0 - 1.5, theta);
         assert_decodes_to_pose(&pattern, pose);
@@ -158,25 +153,15 @@ fn diagonal_layout_decodes_through_rotation() {
 }
 
 #[test]
-fn diagonal_layout_decodes_at_45_degrees() {
-    let pattern = diagonal();
-    let quarter = std::f64::consts::FRAC_PI_4;
-    for step in 0..4 {
-        let pose = PatternPose::new(step as f64 * 53.0 + 1.9, step as f64 * -37.0 + 2.7, quarter);
-        assert_decodes_to_pose(&pattern, pose);
-    }
-}
-
-#[test]
 fn the_layouts_do_not_decode_each_other() {
     let pose = PatternPose::new(311.0 + 3.3, -177.0 - 5.7, 0.0);
-    let pattern = diagonal();
+    let pattern = diamonds();
     let image = pattern.render(SIZE, SIZE, &pose);
     let detection = detect(&image);
 
-    let right = extract_code_with_layout(&detection, image.as_slice(), ORDER, CodeLayout::Diagonals)
+    let right = extract_code_with_layout(&detection, image.as_slice(), ORDER, CodeLayout::Diamonds)
         .expect("the matching layout must decode");
-    let (want_i, want_j) = expected_square(&pose);
+    let (want_i, want_j) = expected_square(&pattern, &pose);
     let period = 3 * pattern.code().len() as i64;
     assert_eq!(
         (
@@ -190,16 +175,15 @@ fn the_layouts_do_not_decode_each_other() {
     if let Ok(wrong) = extract_code(&detection, image.as_slice(), ORDER) {
         assert_ne!(
             wrong.centre_square, right.centre_square,
-            "the lattice-axis rule reproduced the diagonal decode, so the layout \
-             parameter is not actually being used"
+            "the squares rule reproduced the diamonds decode"
         );
     }
 }
 
 #[test]
-fn diagonal_layout_recovers_sub_square_position() {
+fn diamonds_recover_sub_square_position() {
     // Catches a half-period slip in the (u, v) -> (i, j) conversion.
-    let pattern = diagonal();
+    let pattern = diamonds();
     let mut worst = 0.0f64;
     for step in 0..8 {
         let pose = PatternPose::new(step as f64 * 29.0 + 1.7, step as f64 * 17.0 + 0.9, 0.0);
@@ -210,28 +194,24 @@ fn diagonal_layout_recovers_sub_square_position() {
             image.as_slice(),
             SQUARE,
             ORDER,
-            CodeLayout::Diagonals,
+            CodeLayout::Diamonds,
         )
         .unwrap_or_else(|e| panic!("solve failed at {pose:?}: {e}"));
 
-        let period = 3.0 * pattern.code().len() as f64 * SQUARE;
-        let error_x = (recovered.x - -pose.x).rem_euclid(period);
-        let error_y = (recovered.y - -pose.y).rem_euclid(period);
-        let error_x = error_x.min(period - error_x);
-        let error_y = error_y.min(period - error_y);
-        worst = worst.max(error_x).max(error_y);
+        let (error_x, error_y) = pattern.wrap_offset(recovered.x + pose.x, recovered.y + pose.y);
+        worst = worst.max(error_x.abs()).max(error_y.abs());
     }
     assert!(
         worst < 0.25,
         "worst absolute position error {worst:.4} px -- the fine phase is not \
-         being combined with the diagonal code correctly"
+         being combined with the diamond code correctly"
     );
 }
 
 #[test]
-fn diagonal_layout_decodes_random_poses() {
+fn diamonds_decode_random_poses() {
     // Hits both parities of Δu + Δv; the fixed poses above only hit even.
-    let pattern = diagonal();
+    let pattern = diamonds();
     let mut state: u64 = 0x2545_f491_4f6c_dd1d;
     let mut unit = move || {
         state = state
@@ -275,7 +255,7 @@ const SUBHARMONIC_POSES: [usize; 5] = [1, 27, 38, 52, 97];
 #[test]
 fn guarded_detection_decodes_poses_that_lock_onto_the_code_line() {
     let poses = random_poses();
-    for layout in [CodeLayout::LatticeAxes, CodeLayout::Diagonals] {
+    for layout in [CodeLayout::Squares, CodeLayout::Diamonds] {
         let pattern = Checkerboard::new(SQUARE, ORDER).unwrap().with_code_layout(layout);
         for &index in &SUBHARMONIC_POSES {
             assert_decodes_to_pose(&pattern, poses[index]);
@@ -301,7 +281,7 @@ fn decoder_refuses_a_lock_onto_the_code_line() {
 #[test]
 fn reports_the_pattern_orientation_at_every_quarter() {
     // Was once 45° off everywhere.
-    for layout in [CodeLayout::LatticeAxes, CodeLayout::Diagonals] {
+    for layout in [CodeLayout::Squares, CodeLayout::Diamonds] {
         let pattern = Checkerboard::new(SQUARE, ORDER).unwrap().with_code_layout(layout);
         for degrees in [-170.0f64, -80.0, -30.0, 0.0, 3.0, 45.0, 70.0, 100.0, 150.0] {
             let theta = degrees.to_radians();
