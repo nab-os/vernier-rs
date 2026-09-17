@@ -1,13 +1,10 @@
 //! Diamond vs square: the two physical designs, as they sit on the sensor.
 //!
-//! - square:  square tiles upright, lattice-axes code (upright), carriers on the
-//!   image diagonals. Nominal orientation 0 deg.
-//! - diamond: tiles turned 45 deg, diagonal code (still upright in the image),
-//!   carriers on the image axes. Nominal orientation 45 deg.
+//! - square:  `CodeLayout::Squares`, carriers on the image diagonals.
+//! - diamond: `CodeLayout::Diamonds`, carriers on the image axes.
 //!
 //! Both are decoded over the same 100 random translations and the same
-//! orientation jitter around their own nominal angle, so the only difference
-//! between them is the design. A third subject, diamond-matched-range, uses
+//! orientation jitter, so the only difference between them is the design. A third subject, diamond-matched-range, uses
 //! 8*sqrt(2) px tiles so its absolute range equals the square design's.
 //!
 //! Besides the degradation families from `degradation_suite`, a resolution
@@ -268,27 +265,22 @@ fn degrade(image: &mut [f32], variant: Variant, level: f64, seed: u64) {
 struct Design {
     name: &'static str,
     layout: CodeLayout,
-    /// Nominal orientation of the pattern on the sensor.
-    nominal_theta: f64,
     square: f64,
 }
 
 const SQUARE: Design = Design {
     name: "square",
-    layout: CodeLayout::LatticeAxes,
-    nominal_theta: 0.0,
+    layout: CodeLayout::Squares,
     square: 8.0,
 };
 const DIAMOND: Design = Design {
     name: "diamond",
-    layout: CodeLayout::Diagonals,
-    nominal_theta: std::f64::consts::FRAC_PI_4,
+    layout: CodeLayout::Diamonds,
     square: 8.0,
 };
 const DIAMOND_MATCHED: Design = Design {
     name: "diamond-matched-range",
-    layout: CodeLayout::Diagonals,
-    nominal_theta: std::f64::consts::FRAC_PI_4,
+    layout: CodeLayout::Diamonds,
     square: 8.0 * std::f64::consts::SQRT_2,
 };
 
@@ -306,10 +298,10 @@ fn offsets(jitter_deg: f64) -> Vec<(f64, f64, f64)> {
         .collect()
 }
 
-fn poses_for(design: &Design, offsets: &[(f64, f64, f64)]) -> Vec<PatternPose> {
+fn poses_for(_design: &Design, offsets: &[(f64, f64, f64)]) -> Vec<PatternPose> {
     offsets
         .iter()
-        .map(|&(x, y, d)| PatternPose::new(x, y, design.nominal_theta + d))
+        .map(|&(x, y, d)| PatternPose::new(x, y, d))
         .collect()
 }
 
@@ -362,7 +354,6 @@ fn evaluate(
     degradation: Option<(Variant, f64)>,
 ) -> Stats {
     let layout = pattern.code_layout();
-    let period_px = (3 * pattern.code().len()) as f64 * square;
     let chunk = poses.len().div_ceil(threads());
 
     let per_thread: Vec<(usize, usize, Vec<f64>, f64, usize)> = std::thread::scope(|scope| {
@@ -396,11 +387,8 @@ fn evaluate(
                         // Correct means within half a square of the truth. Comparing
                         // square indices instead miscounts poses that sit on a square
                         // boundary, where a sub-pixel difference flips the rounding.
-                        let wrap = |e: f64| {
-                            let e = e.rem_euclid(period_px);
-                            e.min(period_px - e)
-                        };
-                        let (ex, ey) = (wrap(recovered.x + pose.x), wrap(recovered.y + pose.y));
+                        let (ex, ey) = pattern.wrap_offset(recovered.x + pose.x, recovered.y + pose.y);
+                        let (ex, ey) = (ex.abs(), ey.abs());
                         if ex < 0.5 * square && ey < 0.5 * square {
                             correct += 1;
                             bits += code.check_bits as f64;

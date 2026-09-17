@@ -8,6 +8,10 @@
 //! Flipping a square centre only shrinks the carrier, never shifts its phase,
 //! and the sites alternate colour so the fill stays 50/50.
 //!
+//! Two layouts: `Squares` (upright squares, code along their edges) and
+//! `Diamonds` (squares turned 45°, code along their diagonals, so the code grid
+//! stays upright).
+//!
 //! The code period `3·(2ⁿ − 1)` is odd, so the pattern really repeats after two
 //! periods. We only claim one.
 
@@ -26,7 +30,7 @@ pub const X_SITE: (i64, i64) = (1, 0);
 
 pub const Y_SITE: (i64, i64) = (0, 1);
 
-/// Same sites for [`CodeLayout::Diagonals`], as `(u mod 3, v mod 3)`.
+/// Same sites for [`CodeLayout::Diamonds`], as `(u mod 3, v mod 3)`.
 pub const U_SITE: (i64, i64) = (1, 0);
 
 pub const V_SITE: (i64, i64) = (0, 1);
@@ -37,15 +41,40 @@ pub enum CodeAxis {
     Y,
 }
 
-/// Which directions the code runs along.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CodeLayout {
-    /// Along the square edges, `(i, j)`.
+    /// Upright squares, code along their edges `(i, j)`.
     #[default]
-    LatticeAxes,
-    /// Along the diagonals, `(i+j, i−j)`. Rendered at 45° you get diamonds on an
-    /// upright code grid. Costs √2 of range, and each code band is one colour.
-    Diagonals,
+    Squares,
+    /// Squares turned 45°, code along their diagonals `(i+j, i−j)`, which run
+    /// along the pattern axes. Costs √2 of range, and each code band is one colour.
+    Diamonds,
+}
+
+impl CodeLayout {
+    /// Angle of the square lattice in the pattern frame.
+    pub fn lattice_angle(self) -> Real {
+        match self {
+            Self::Squares => 0.0,
+            Self::Diamonds => PI / 4.0,
+        }
+    }
+
+    /// Pattern frame to square-lattice frame.
+    pub fn to_lattice(self, x: Real, y: Real) -> (Real, Real) {
+        match self {
+            Self::Squares => (x, y),
+            Self::Diamonds => ((x + y) / SQRT_2, (y - x) / SQRT_2),
+        }
+    }
+
+    /// Square-lattice frame to pattern frame.
+    pub fn from_lattice(self, x: Real, y: Real) -> (Real, Real) {
+        match self {
+            Self::Squares => (x, y),
+            Self::Diamonds => ((x - y) / SQRT_2, (x + y) / SQRT_2),
+        }
+    }
 }
 
 /// Parameters of a coded checkerboard pattern.
@@ -73,7 +102,7 @@ impl Checkerboard {
             code,
             lfsr_offset: 0,
             supersample: 4,
-            layout: CodeLayout::LatticeAxes,
+            layout: CodeLayout::Squares,
         })
     }
 
@@ -114,9 +143,18 @@ impl Checkerboard {
     pub fn range_px(&self) -> Real {
         let steps = self.range_squares() as Real;
         match self.layout {
-            CodeLayout::LatticeAxes => steps * self.square_px,
-            CodeLayout::Diagonals => steps * self.square_px / SQRT_2,
+            CodeLayout::Squares => steps * self.square_px,
+            CodeLayout::Diamonds => steps * self.square_px / SQRT_2,
         }
+    }
+
+    /// A pattern-frame offset, reduced to the smallest equivalent one modulo the
+    /// code period. The period lattice is turned with the squares.
+    pub fn wrap_offset(&self, dx: Real, dy: Real) -> (Real, Real) {
+        let period = self.range_squares() as Real * self.square_px;
+        let wrap = |e: Real| e - period * (e / period).round();
+        let (x, y) = self.layout.to_lattice(dx, dy);
+        self.layout.from_lattice(wrap(x), wrap(y))
     }
 
     pub fn code_bit(&self, index: i64) -> u8 {
@@ -154,12 +192,12 @@ impl Checkerboard {
     /// True at a coding site whose bit is 0.
     pub fn square_inverted(&self, i: i64, j: i64) -> bool {
         match self.layout {
-            CodeLayout::LatticeAxes => match Self::coding_axis(i, j) {
+            CodeLayout::Squares => match Self::coding_axis(i, j) {
                 Some(CodeAxis::X) => self.code_bit(i.div_euclid(CELL)) == 0,
                 Some(CodeAxis::Y) => self.code_bit(j.div_euclid(CELL)) == 0,
                 None => false,
             },
-            CodeLayout::Diagonals => {
+            CodeLayout::Diamonds => {
                 let (u, v) = Self::diagonal_coords(i, j);
                 match Self::diagonal_coding_axis(u, v) {
                     Some(CodeAxis::X) => self.code_bit(u.div_euclid(CELL)) == 0,
@@ -180,6 +218,7 @@ impl Checkerboard {
     }
 
     pub fn square_at(&self, x: Real, y: Real) -> (i64, i64) {
+        let (x, y) = self.layout.to_lattice(x, y);
         (
             (x / self.square_px).floor() as i64,
             (y / self.square_px).floor() as i64,
@@ -202,11 +241,13 @@ impl Checkerboard {
 
     /// `π(i+j)` at a square centre.
     pub fn phase1_at(&self, x: Real, y: Real) -> Real {
+        let (x, y) = self.layout.to_lattice(x, y);
         PI * ((x + y) / self.square_px - 1.0)
     }
 
     /// `π(i−j)` at a square centre.
     pub fn phase2_at(&self, x: Real, y: Real) -> Real {
+        let (x, y) = self.layout.to_lattice(x, y);
         PI * (x - y) / self.square_px
     }
 
@@ -358,8 +399,8 @@ mod tests {
         for i in 0..n {
             for j in 0..n {
                 let coding = match c.code_layout() {
-                    CodeLayout::LatticeAxes => Checkerboard::coding_axis(i, j).is_some(),
-                    CodeLayout::Diagonals => {
+                    CodeLayout::Squares => Checkerboard::coding_axis(i, j).is_some(),
+                    CodeLayout::Diamonds => {
                         let (u, v) = Checkerboard::diagonal_coords(i, j);
                         Checkerboard::diagonal_coding_axis(u, v).is_some()
                     }
@@ -402,18 +443,18 @@ mod tests {
     fn diagonal_layout_keeps_every_design_property() {
         let diagonal = Checkerboard::new(8.0, 8)
             .unwrap()
-            .with_code_layout(CodeLayout::Diagonals);
+            .with_code_layout(CodeLayout::Diamonds);
         assert_design_properties(&diagonal, "diagonals");
 
         let axes = Checkerboard::new(8.0, 8).unwrap();
-        assert_eq!(axes.code_layout(), CodeLayout::LatticeAxes);
+        assert_eq!(axes.code_layout(), CodeLayout::Squares);
         assert_design_properties(&axes, "lattice axes");
     }
 
     #[test]
     fn diagonal_layout_actually_moves_the_code() {
         let axes = Checkerboard::new(8.0, 8).unwrap();
-        let diagonal = axes.clone().with_code_layout(CodeLayout::Diagonals);
+        let diagonal = axes.clone().with_code_layout(CodeLayout::Diamonds);
 
         let mut differing = 0;
         for i in 0..90 {
@@ -435,12 +476,12 @@ mod tests {
             for j in -n..n {
                 let (u, v) = Checkerboard::diagonal_coords(i, j);
                 let (axis, band) = match c.code_layout() {
-                    CodeLayout::LatticeAxes => match Checkerboard::coding_axis(i, j) {
+                    CodeLayout::Squares => match Checkerboard::coding_axis(i, j) {
                         Some(CodeAxis::X) => (true, i.div_euclid(CELL)),
                         Some(CodeAxis::Y) => (false, j.div_euclid(CELL)),
                         None => continue,
                     },
-                    CodeLayout::Diagonals => match Checkerboard::diagonal_coding_axis(u, v) {
+                    CodeLayout::Diamonds => match Checkerboard::diagonal_coding_axis(u, v) {
                         Some(CodeAxis::X) => (true, u.div_euclid(CELL)),
                         Some(CodeAxis::Y) => (false, v.div_euclid(CELL)),
                         None => continue,
@@ -480,7 +521,7 @@ mod tests {
         // sites can't fix it.
         let c = Checkerboard::new(8.0, 8)
             .unwrap()
-            .with_code_layout(CodeLayout::Diagonals);
+            .with_code_layout(CodeLayout::Diamonds);
         let worst = worst_band_imbalance(&c);
         assert!(
             worst > 0.99,
@@ -490,9 +531,36 @@ mod tests {
     }
 
     #[test]
+    fn diamonds_are_squares_turned_45_degrees() {
+        let squares = Checkerboard::new(8.0, 8).unwrap();
+        let diamonds = squares.clone().with_code_layout(CodeLayout::Diamonds);
+        let (s, c) = (PI / 4.0).sin_cos();
+        for k in 0..200 {
+            let (x, y) = ((k as Real * 7.31) % 97.0 - 40.0, (k as Real * 3.17) % 89.0 - 45.0);
+            let (lx, ly) = (c * x + s * y, -s * x + c * y);
+            assert_eq!(diamonds.square_at(x, y), squares.square_at(lx, ly));
+        }
+        // Carriers along the pattern axes.
+        assert!((diamonds.phase2_at(3.0, 5.0) - diamonds.phase2_at(3.0, 50.0)).abs() < 1e-9);
+        assert!((diamonds.phase1_at(3.0, 5.0) - diamonds.phase1_at(30.0, 5.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn wrap_offset_removes_whole_periods() {
+        for layout in [CodeLayout::Squares, CodeLayout::Diamonds] {
+            let c = Checkerboard::new(8.0, 8).unwrap().with_code_layout(layout);
+            let period = c.range_squares() as Real * c.square_px;
+            let (px, py) = layout.from_lattice(period, 0.0);
+            let (qx, qy) = layout.from_lattice(0.0, period);
+            let (dx, dy) = c.wrap_offset(1.5 + 2.0 * px - qx, -0.5 + 2.0 * py - qy);
+            assert!((dx - 1.5).abs() < 1e-6 && (dy + 0.5).abs() < 1e-6, "{layout:?}: ({dx}, {dy})");
+        }
+    }
+
+    #[test]
     fn diagonal_layout_costs_sqrt2_of_range() {
         let axes = Checkerboard::new(8.0, 8).unwrap();
-        let diagonal = axes.clone().with_code_layout(CodeLayout::Diagonals);
+        let diagonal = axes.clone().with_code_layout(CodeLayout::Diamonds);
 
         assert_eq!(axes.range_squares(), diagonal.range_squares());
         let ratio = axes.range_px() / diagonal.range_px();

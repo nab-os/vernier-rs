@@ -139,7 +139,7 @@ pub fn extract_code(
     intensity: &[f32],
     order: u32,
 ) -> Result<CheckerboardCode, CheckerboardError> {
-    extract_code_with_layout(detection, intensity, order, CodeLayout::LatticeAxes)
+    extract_code_with_layout(detection, intensity, order, CodeLayout::Squares)
 }
 
 pub fn extract_code_with_layout(
@@ -473,15 +473,15 @@ pub fn detect_checkerboard<B: ComputeBackend>(
 /// Coordinates the code is counted in: `(i, j)`, or `(i+j, i-j)` for diagonals.
 fn code_coords(layout: CodeLayout, i: i64, j: i64) -> (i64, i64) {
     match layout {
-        CodeLayout::LatticeAxes => (i, j),
-        CodeLayout::Diagonals => (i + j, i - j),
+        CodeLayout::Squares => (i, j),
+        CodeLayout::Diamonds => (i + j, i - j),
     }
 }
 
 fn layout_sites(layout: CodeLayout) -> ((i64, i64), (i64, i64)) {
     match layout {
-        CodeLayout::LatticeAxes => (X_SITE, Y_SITE),
-        CodeLayout::Diagonals => (U_SITE, V_SITE),
+        CodeLayout::Squares => (X_SITE, Y_SITE),
+        CodeLayout::Diamonds => (U_SITE, V_SITE),
     }
 }
 
@@ -596,8 +596,8 @@ fn try_origin(
     // Diagonal layout: back to (i, j). The deltas are only known modulo an odd
     // period, so if their sum is odd, shift one by a period to make it even.
     let (delta_i, delta_j) = match layout {
-        CodeLayout::LatticeAxes => (delta_a, delta_b),
-        CodeLayout::Diagonals => {
+        CodeLayout::Squares => (delta_a, delta_b),
+        CodeLayout::Diamonds => {
             let period = CELL * lfsr.len() as i64;
             let delta_b = if (delta_a + delta_b).rem_euclid(2) != 0 {
                 delta_b + period
@@ -760,7 +760,7 @@ pub fn solve_checkerboard(
         intensity,
         square_size,
         order,
-        CodeLayout::LatticeAxes,
+        CodeLayout::Squares,
     )
 }
 
@@ -773,12 +773,18 @@ pub fn solve_checkerboard_with_layout(
 ) -> Result<(Pose, CheckerboardCode), CheckerboardError> {
     let code = extract_code_with_layout(detection, intensity, order, layout)?;
 
-    let x = square_size * (code.centre.0 + 0.5);
-    let y = square_size * (code.centre.1 + 0.5);
+    // Centre in the lattice frame, then in the pattern frame (turned for diamonds).
+    let (x, y) = layout.from_lattice(
+        square_size * (code.centre.0 + 0.5),
+        square_size * (code.centre.1 + 0.5),
+    );
 
     // The carrier runs at 45° to the squares, then undo the decoded quarter-turn.
     let quadrant = (code.transform % 4) as Real;
-    let raw = detection.dir1.plane.orientation() - PI / 4.0 - quadrant * (PI / 2.0);
+    let raw = detection.dir1.plane.orientation()
+        - PI / 4.0
+        - quadrant * (PI / 2.0)
+        - layout.lattice_angle();
     let theta = raw - TAU * ((raw + PI) / TAU).floor();
 
     let gradient = (detection.dir1.plane.a.powi(2) + detection.dir1.plane.b.powi(2)).sqrt();

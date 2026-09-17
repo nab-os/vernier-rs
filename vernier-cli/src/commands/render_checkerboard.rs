@@ -14,16 +14,16 @@ pub struct RenderCheckerboardArgs {
     pub code_size: u32,
     /// Render the uncoded carrier instead of the coded pattern.
     pub plain: bool,
-    /// Index the code along the lattice diagonals rather than the square edges.
-    pub diagonal_code: bool,
+    /// Diamond layout: code along the diagonals.
+    pub diamonds: bool,
     pub output: std::path::PathBuf,
 }
 
 pub fn run(args: &RenderCheckerboardArgs) -> Result<(), String> {
-    let layout = if args.diagonal_code {
-        CodeLayout::Diagonals
+    let layout = if args.diamonds {
+        CodeLayout::Diamonds
     } else {
-        CodeLayout::LatticeAxes
+        CodeLayout::Squares
     };
     let pattern = Checkerboard::new(args.square_px, args.code_size)
         .ok_or_else(|| format!("unsupported code size {}; must be 4..=12", args.code_size))?

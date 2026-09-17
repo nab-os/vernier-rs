@@ -66,10 +66,8 @@ fn run(pattern: &Checkerboard, square: f64, pose: &PatternPose) -> Outcome {
     match extract_code_with_layout(&detection, image.as_slice(), ORDER, layout) {
         Err(e) => Outcome::DecodeError(e.to_string()),
         Ok(code) => {
-            let want = (
-                (-pose.x / square - 0.5).round() as i64,
-                (-pose.y / square - 0.5).round() as i64,
-            );
+            let (lx, ly) = layout.to_lattice(-pose.x, -pose.y);
+            let want = ((lx / square - 0.5).round() as i64, (ly / square - 0.5).round() as i64);
             let off = (
                 (code.centre_square.0 - want.0).rem_euclid(period),
                 (code.centre_square.1 - want.1).rem_euclid(period),
@@ -159,12 +157,12 @@ fn report(label: &str, pattern: &Checkerboard, square: f64) {
 }
 
 fn main() {
-    let axes = Checkerboard::new(8.0, ORDER).unwrap();
-    let diag8 = axes.clone().with_code_layout(CodeLayout::Diagonals);
-    let diag11 = Checkerboard::new(8.0 * std::f64::consts::SQRT_2, ORDER)
+    let squares = Checkerboard::new(8.0, ORDER).unwrap();
+    let diamonds = squares.clone().with_code_layout(CodeLayout::Diamonds);
+    let diamonds_matched = Checkerboard::new(8.0 * std::f64::consts::SQRT_2, ORDER)
         .unwrap()
-        .with_code_layout(CodeLayout::Diagonals);
-    report("lattice axes", &axes, 8.0);
-    report("diagonals", &diag8, 8.0);
-    report("diagonals, matched range", &diag11, 8.0 * std::f64::consts::SQRT_2);
+        .with_code_layout(CodeLayout::Diamonds);
+    report("squares", &squares, 8.0);
+    report("diamonds", &diamonds, 8.0);
+    report("diamonds, matched range", &diamonds_matched, 8.0 * std::f64::consts::SQRT_2);
 }
