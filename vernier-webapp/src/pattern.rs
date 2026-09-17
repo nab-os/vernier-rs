@@ -9,7 +9,7 @@
 
 use vernier_core::scalar::consts::SQRT_2;
 use vernier_core::{GrayImage, Real};
-use vernier_patterns::checkerboard::Checkerboard;
+use vernier_patterns::checkerboard::{Checkerboard, CodeLayout};
 use vernier_patterns::megarena::Megarena;
 use vernier_patterns::periodic::Periodic;
 use vernier_patterns::qrcode::QrLike;
@@ -162,6 +162,11 @@ pub struct PatternSettings {
     /// Render the checkerboard with every coding site left at its parity colour
     /// — the uncoded reference, for seeing what the code costs.
     pub plain_checkerboard: bool,
+    /// Which way the coded lattice sits. `Squares` writes the code along the
+    /// square edges, leaving the carriers on the diagonals; `Diamonds` turns
+    /// the lattice 45°, which puts the carriers on the pattern axes instead and
+    /// costs √2 of absolute range.
+    pub code_layout: CodeLayout,
 
     /// Stamp tile side in pixels.
     pub tile_px: usize,
@@ -192,6 +197,7 @@ impl Default for PatternSettings {
             // Upstream's own default; see the supersample field.
             supersample: 4,
             plain_checkerboard: false,
+            code_layout: CodeLayout::Squares,
             tile_px: 32,
             modules: 21,
             module_px: 8,
@@ -229,7 +235,9 @@ impl PatternSettings {
                 .ok_or_else(|| self.order_error()),
             PatternKind::Checkerboard => Checkerboard::new(self.square_px, self.order)
                 .map(|pattern| {
-                    let pattern = pattern.with_lfsr_offset(self.lfsr_offset);
+                    let pattern = pattern
+                        .with_code_layout(self.code_layout)
+                        .with_lfsr_offset(self.lfsr_offset);
                     let plain = self.plain_checkerboard;
                     Box::new(move |x, y| {
                         if plain {
@@ -297,6 +305,7 @@ impl PatternSettings {
             PatternKind::Checkerboard => Checkerboard::new(self.square_px, self.order)
                 .map(|pattern| {
                     let pattern = pattern
+                        .with_code_layout(self.code_layout)
                         .with_lfsr_offset(self.lfsr_offset)
                         .with_supersample(self.supersample);
                     if self.plain_checkerboard {
@@ -368,8 +377,12 @@ impl PatternSettings {
                 self.period_px, self.order, self.lfsr_offset
             ),
             PatternKind::Checkerboard => format!(
-                "Checkerboard::new({:.3}, {})\n    .unwrap()\n    .with_lfsr_offset({})\n    .with_supersample({})",
-                self.square_px, self.order, self.lfsr_offset, self.supersample
+                "Checkerboard::new({:.3}, {})\n    .unwrap()\n    .with_code_layout(CodeLayout::{:?})\n    .with_lfsr_offset({})\n    .with_supersample({})",
+                self.square_px,
+                self.order,
+                self.code_layout,
+                self.lfsr_offset,
+                self.supersample
             ),
             PatternKind::Stamp => format!("Stamp::new({})", self.tile_px),
             PatternKind::QrLike => format!("QrLike::new({}, {})", self.modules, self.module_px),
@@ -439,6 +452,24 @@ mod tests {
         for kind in [PatternKind::Megarena, PatternKind::Checkerboard] {
             let settings = PatternSettings { kind, order: 3, ..Default::default() };
             assert!(settings.render().unwrap_err().contains("4..=12"));
+        }
+    }
+
+    /// The snippet is meant to be pasted and run, so it has to carry the layout
+    /// too — the two produce different patterns from identical other settings.
+    #[test]
+    fn snippet_carries_the_code_layout() {
+        for layout in [CodeLayout::Squares, CodeLayout::Diamonds] {
+            let settings = PatternSettings {
+                kind: PatternKind::Checkerboard,
+                code_layout: layout,
+                ..Default::default()
+            };
+            let snippet = settings.equivalent_rust();
+            assert!(
+                snippet.contains(&format!("with_code_layout(CodeLayout::{layout:?})")),
+                "{snippet}"
+            );
         }
     }
 

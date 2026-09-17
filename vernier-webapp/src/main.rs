@@ -21,6 +21,7 @@ use dioxus::prelude::*;
 use controls::{NumberField, Section, Toggle};
 use explorer::{Explorer, ExplorerSettings};
 use pattern::{PatternKind, PatternSettings, MAX_SIDE, MIN_SIDE, ORDER_RANGE};
+use vernier_patterns::checkerboard::CodeLayout;
 
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 
@@ -352,6 +353,23 @@ pub(crate) fn pattern_fields(mut settings: Signal<PatternSettings>, current: &Pa
             }
         },
         PatternKind::Checkerboard => rsx! {
+            div { class: "field",
+                div { class: "field-head",
+                    label { class: "field-label", "Code layout" }
+                }
+                div { class: "preset-row",
+                    for layout in [CodeLayout::Squares, CodeLayout::Diamonds] {
+                        button {
+                            key: "{layout:?}",
+                            r#type: "button",
+                            class: "preset {selected(current.code_layout == layout)}",
+                            onclick: move |_| settings.write().code_layout = layout,
+                            "{layout_label(layout)}"
+                        }
+                    }
+                }
+                p { class: "hint", "{layout_hint(current.code_layout)}" }
+            }
             NumberField {
                 label: "Square side".to_string(),
                 value: current.square_px,
@@ -441,6 +459,31 @@ pub(crate) fn pattern_fields(mut settings: Signal<PatternSettings>, current: &Pa
                 on_change: move |value: f64| settings.write().module_px = value.round() as usize,
             }
         },
+    }
+}
+
+/// Name of a code layout in the selector.
+fn layout_label(layout: CodeLayout) -> &'static str {
+    match layout {
+        CodeLayout::Squares => "Squares",
+        CodeLayout::Diamonds => "Diamonds",
+    }
+}
+
+/// What choosing one costs and buys. The two differ in where the code sits
+/// relative to the carrier, which is why the explorer finds the peaks somewhere
+/// different for each.
+fn layout_hint(layout: CodeLayout) -> &'static str {
+    match layout {
+        CodeLayout::Squares => {
+            "Upright squares, code written along their edges. The carriers run along \
+             the diagonals, so the peaks sit at ±45°."
+        }
+        CodeLayout::Diamonds => {
+            "Squares turned 45°, code along their diagonals — which puts the carriers \
+             on the pattern axes and the peaks at 0° and 90°. Costs a factor of √2 in \
+             absolute range, and each code band is one colour."
+        }
     }
 }
 
