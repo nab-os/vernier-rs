@@ -1,13 +1,10 @@
 //! The virtual camera the explorer looks through.
 //!
-//! `vernier_patterns` renders through `PatternPose`, which carries x, y and θ —
-//! everything that stays in the pattern plane. Out-of-plane motion has no path
-//! through it, so the explorer keeps its own six-freedom pose and does the
-//! projection here, sampling the pattern through [`PatternSettings::sampler`].
-//! Nothing about the pattern is reimplemented: this only decides which point of
-//! the plane each pixel is looking at.
-//!
-//! [`PatternSettings::sampler`]: crate::pattern::PatternSettings::sampler
+//! `PatternPose` carries x, y and θ, so out-of-plane motion has no path through
+//! it. The explorer keeps its own six-freedom pose and does the projection here,
+//! sampling the pattern through `PatternSettings::sampler`. Nothing about the
+//! pattern is reimplemented: this only decides which point of the plane each
+//! pixel is looking at.
 
 use nalgebra::{Matrix3, Matrix4, Vector3};
 use vernier_core::{GrayImage, Real};
@@ -132,9 +129,8 @@ impl Pose6 {
 
 /// Renders what the camera sees into a `size × size` image.
 ///
-/// `supersample` sub-samples each pixel edge. The coded patterns are binary, so
-/// point-sampling their edges aliases, and the alias lands in the spectrum as a
-/// shifted carrier phase — the one thing this whole page is for looking at.
+/// `supersample` sub-samples each pixel edge: the coded patterns are binary, and
+/// point-sampling their edges aliases into a shifted carrier phase.
 pub fn render(
     sampler: &Sampler,
     pose: &Pose6,

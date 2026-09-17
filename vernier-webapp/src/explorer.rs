@@ -1,17 +1,9 @@
-//! The spectrum explorer view.
-//!
-//! One pattern, one camera, and every stage the detector passes through laid
-//! out beside each other:
+//! The spectrum explorer view: one pattern, one camera, and every stage the
+//! detector passes through laid out beside each other.
 //!
 //!   camera image → FFT → peak selection → band-pass → reconstruction → phases
 //!
-//! Drag the camera image and watch the spectrum answer. Translation leaves the
-//! peaks where they are and only turns the phase; rotation about Z swings them
-//! around the origin; distance moves them radially; the out-of-plane angles
-//! pull the pair off its right angle until the search band or the Gaussian
-//! window stops tracking them. Changing the source pattern changes what sits
-//! around those peaks — a bare harmonic lattice for the periodic grid, a
-//! thicket of code sidebands for the megarena and the checkerboard.
+//! Drag the camera image and watch the spectrum answer.
 
 use dioxus::prelude::*;
 use vernier_core::Real;
@@ -52,16 +44,12 @@ pub struct ExplorerSettings {
     pub supersample: u32,
     /// Gaussian band-pass width, in bins.
     pub sigma: Real,
-    /// Inner radius of the search band, in bins. Carriers inside it are
-    /// rejected as low-frequency background.
+    /// Inner radius of the search band, in bins.
     pub min_frequency: usize,
     /// Blur applied before the peak search, in bins.
     pub smoothing_sigma: Real,
-    /// Compress the FFT panels logarithmically. On a coded pattern the carrier
-    /// peaks stand orders of magnitude above the sidebands, so a linear ramp
-    /// shows two white dots on black and nothing else; the log is what makes
-    /// the rest of the spectrum visible. Linear is the honest view of the
-    /// magnitudes, and the one that shows how completely the peaks dominate.
+    /// Compress the FFT panels logarithmically. Without it a coded pattern's
+    /// peaks leave the rest of the spectrum at black.
     pub log_spectra: bool,
 }
 
@@ -78,8 +66,7 @@ impl ExplorerSettings {
         }
     }
 
-    /// Nyquist is the ceiling: no bin beyond it carries a frequency the image
-    /// can represent.
+    /// Nyquist is the ceiling.
     pub fn max_frequency(&self) -> usize {
         self.size / 2 - 2
     }
@@ -94,9 +81,8 @@ struct Report {
     peaks: Option<[(Real, Real); 2]>,
     plane_deg: Option<[Real; 2]>,
     measured_period_px: Option<Real>,
-    /// Carrier period the camera should be producing, in image pixels: the
-    /// pattern's own fringe spacing times the magnification. Shown beside the
-    /// measured one, because the two agreeing is the whole claim.
+    /// Carrier period the camera should be producing, in image pixels, shown
+    /// beside the measured one.
     expected_period_px: Real,
 }
 
@@ -208,18 +194,15 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
                     }
                     p { class: "blurb", "{pattern.kind.blurb()}" }
                     if !pattern.kind.has_point_sampler() {
-                        p { class: "notice",
-                            "This generator is a stub upstream and ignores the pose, so there is \
-                             nothing for a camera to look at. The other three work."
-                        }
+                        p { class: "notice", "A stub upstream: nothing to look at." }
                     }
                     {crate::pattern_fields(settings, &pattern)}
                 }
 
                 Section { title: "Camera".to_string(),
                     p { class: "blurb",
-                        "Drag the camera image: left to translate, right to rotate and change \
-                         distance, middle to tilt out of plane. Hold shift for finer motion."
+                        "Drag: left translates, right rotates and changes distance, middle tilts. \
+                         Shift for finer motion."
                     }
                     NumberField {
                         label: "Distance".to_string(),
@@ -238,7 +221,7 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
                         max: 180.0,
                         step: 0.1,
                         unit: "°".to_string(),
-                        hint: "Swings both peaks around the origin.".to_string(),
+                        hint: String::new(),
                         on_change: move |value: f64| {
                             explorer.write().pose.alpha = value.to_radians()
                         },
@@ -250,7 +233,7 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
                         max: MAX_TILT_DEG,
                         step: 0.1,
                         unit: "°".to_string(),
-                        hint: "Out of plane: pulls the peak pair off its right angle.".to_string(),
+                        hint: "Out of plane.".to_string(),
                         on_change: move |value: f64| {
                             explorer.write().pose.beta = value.to_radians()
                         },
@@ -288,7 +271,7 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
                         max: 20.0,
                         step: 0.1,
                         unit: "bins".to_string(),
-                        hint: "Width of the Gaussian kept around each peak.".to_string(),
+                        hint: String::new(),
                         on_change: move |value: f64| explorer.write().sigma = value,
                     }
                     NumberField {
@@ -310,7 +293,7 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
                         max: 4.0,
                         step: 1.0,
                         unit: "×/edge".to_string(),
-                        hint: "The coded patterns have hard edges; 1× aliases them.".to_string(),
+                        hint: String::new(),
                         on_change: move |value: f64| {
                             explorer.write().supersample = value.round() as u32
                         },
@@ -321,13 +304,7 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
                     Toggle {
                         label: "Log scale on the FFT panels".to_string(),
                         checked: view.log_spectra,
-                        hint: if view.log_spectra {
-                            "On: sidebands and the noise floor are visible beside the peaks."
-                                .to_string()
-                        } else {
-                            "Off: true magnitudes, and the carrier peaks swamp everything else."
-                                .to_string()
-                        },
+                        hint: String::new(),
                         on_change: move |value: bool| explorer.write().log_spectra = value,
                     }
                 }
@@ -386,8 +363,7 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
     }
 }
 
-/// One captioned stage canvas. The camera image is the one that takes the
-/// pointer; the peak-selection panel carries the overlay.
+/// One captioned stage canvas.
 #[component]
 #[allow(clippy::too_many_arguments)]
 fn StagePanel(
@@ -482,9 +458,8 @@ fn clamp_distance(z: Real) -> Real {
     z.clamp(100.0, 40000.0)
 }
 
-/// The band-pass rings, the two peaks and the Gaussian windows sitting on them,
-/// drawn as SVG over the panel so the rings stay crisp however the canvas is
-/// scaled to fit.
+/// The two peaks, drawn as SVG over the panel so they stay crisp however the
+/// canvas is scaled to fit.
 fn peak_overlay(size: usize, peaks: Option<[(Real, Real); 2]>) -> Element {
     let Some(peaks) = peaks else {
         return rsx! {};
@@ -522,8 +497,7 @@ fn peak_overlay(size: usize, peaks: Option<[(Real, Real); 2]>) -> Element {
     }
 }
 
-/// Paints stages 2 to 6. Stage 1 is painted by the caller, which is the only
-/// one that exists even when the peak search comes up empty.
+/// Paints stages 2 to 6; stage 1 is painted by the caller.
 fn paint_stages(stages: &Stages, view: &ExplorerSettings) -> Result<(), String> {
     let log = view.log_spectra;
     canvas::paint_grey(PANELS[1].0, view.size, &stages.spectrum, log)?;
@@ -533,8 +507,7 @@ fn paint_stages(stages: &Stages, view: &ExplorerSettings) -> Result<(), String> 
     canvas::paint_phases(PANELS[5].0, view.size, &stages.phase1, &stages.phase2)
 }
 
-/// The numbers under the stage head: where the peaks are and what the planes
-/// made of them.
+/// The numbers under the stage head.
 fn readouts(report: &Report) -> Vec<(String, String)> {
     let mut out = Vec::new();
 
