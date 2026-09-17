@@ -283,12 +283,11 @@ fn main() {
     println!("design,variant,level,tile,outcome,false_accept,errors_x,errors_y,check_bits,offset_i,offset_j,err_px,runner_up_fa");
     for (variant, level, tile) in conditions {
         for (name, layout, nominal) in [
-            ("square", CodeLayout::LatticeAxes, 0.0),
-            ("diamond", CodeLayout::Diagonals, std::f64::consts::FRAC_PI_4),
+            ("square", CodeLayout::Squares, 0.0),
+            ("diamond", CodeLayout::Diamonds, 0.0),
         ] {
             let pattern = Checkerboard::new(tile, ORDER).unwrap().with_code_layout(layout);
             let period = 3 * pattern.code().len() as i64;
-            let period_px = period as f64 * tile;
             let rows: Vec<String> = std::thread::scope(|scope| {
                 let handles: Vec<_> = offs
                     .iter()
@@ -311,17 +310,14 @@ fn main() {
                             let Ok((rec, code)) = solve_checkerboard_with_layout(&det, &image, tile, ORDER, layout) else {
                                 return format!("{prefix},nodecode,,,,,,,,");
                             };
-                            let want = ((-pose.x / tile - 0.5).round() as i64, (-pose.y / tile - 0.5).round() as i64);
+                            let (lx, ly) = layout.to_lattice(-pose.x, -pose.y);
+                            let want = ((lx / tile - 0.5).round() as i64, (ly / tile - 0.5).round() as i64);
                             let signed = |v: i64| {
                                 let v = v.rem_euclid(period);
                                 if v > period / 2 { v - period } else { v }
                             };
                             let (oi, oj) = (signed(code.centre_square.0 - want.0), signed(code.centre_square.1 - want.1));
-                            let wrap = |e: f64| {
-                                let e = e.rem_euclid(period_px);
-                                e.min(period_px - e)
-                            };
-                            let (ex, ey) = (wrap(rec.x + pose.x), wrap(rec.y + pose.y));
+                            let (ex, ey) = pattern.wrap_offset(rec.x + pose.x, rec.y + pose.y);
                             let outcome = if oi == 0 && oj == 0 { "correct" } else { "wrong" };
                             format!(
                                 "{prefix},{outcome},{:e},{},{},{},{oi},{oj},{:.4},{:e}",
