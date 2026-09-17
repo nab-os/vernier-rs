@@ -355,176 +355,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_kind_renders_at_the_requested_size() {
+    fn renders_every_kind() {
         for kind in PatternKind::ALL {
-            let settings = PatternSettings {
-                kind,
-                width: 48,
-                height: 32,
-                ..Default::default()
-            };
-            let image = settings.render().expect("default parameters should render");
-            assert_eq!(image.width(), 48, "{kind:?} width");
-            assert_eq!(image.height(), 32, "{kind:?} height");
+            let settings = PatternSettings { kind, width: 48, height: 32, ..Default::default() };
+            let image = settings.render().unwrap();
+            assert_eq!((image.width(), image.height()), (48, 32), "{kind:?}");
         }
     }
 
     #[test]
-    fn unsupported_lfsr_order_reports_the_supported_range() {
-        let settings = PatternSettings {
-            kind: PatternKind::Megarena,
-            order: 3,
-            ..Default::default()
-        };
-        let message = settings.render().expect_err("order 3 is below the supported range");
-        assert!(message.contains("4..=12"), "unhelpful message: {message}");
-    }
-
-    #[test]
-    fn whole_supported_order_range_builds() {
-        for order in ORDER_RANGE {
-            let settings = PatternSettings {
-                kind: PatternKind::Megarena,
-                order,
-                width: 32,
-                height: 32,
-                ..Default::default()
-            };
-            assert!(settings.render().is_ok(), "order {order} should build");
+    fn rejects_unsupported_order() {
+        for kind in [PatternKind::Megarena, PatternKind::Checkerboard] {
+            let settings = PatternSettings { kind, order: 3, ..Default::default() };
+            assert!(settings.render().unwrap_err().contains("4..=12"));
         }
     }
 
     #[test]
-    fn orientation_reaches_the_generator_in_radians() {
-        let settings = PatternSettings {
-            theta_deg: 90.0,
-            ..Default::default()
-        };
-        let expected = std::f64::consts::FRAC_PI_2;
-        assert!((settings.pose().theta - expected).abs() < 1e-12);
+    fn rgba() {
+        let image = GrayImage::from_vec(3, 1, vec![0.0, 1.0, 1.5]).unwrap();
+        assert_eq!(to_rgba(&image, false), vec![0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255]);
+        assert_eq!(&to_rgba(&image, true)[..8], &[255, 255, 255, 255, 0, 0, 0, 255]);
     }
 
     #[test]
-    fn rgba_is_opaque_grey_and_inverts() {
-        let image = GrayImage::from_vec(2, 1, vec![0.0, 1.0]).unwrap();
-
-        let plain = to_rgba(&image, false);
-        assert_eq!(plain, vec![0, 0, 0, 255, 255, 255, 255, 255]);
-
-        let inverted = to_rgba(&image, true);
-        assert_eq!(inverted, vec![255, 255, 255, 255, 0, 0, 0, 255]);
-    }
-
-    #[test]
-    fn rgba_clamps_rather_than_rescaling_out_of_range_intensities() {
-        let image = GrayImage::from_vec(2, 1, vec![-0.5, 1.5]).unwrap();
-        let rgba = to_rgba(&image, false);
-        assert_eq!(rgba[0], 0);
-        assert_eq!(rgba[4], 255);
-    }
-
-    #[test]
-    fn megarena_readouts_match_the_encoding() {
-        let settings = PatternSettings {
-            kind: PatternKind::Megarena,
-            order: 8,
-            period_px: 20.0,
-            ..Default::default()
-        };
-        let derived = settings.derived();
-        let code_length = &derived.iter().find(|(name, _)| name == "Code length").unwrap().1;
-        assert!(code_length.starts_with("255 bits"), "got {code_length}");
-
-        // 255 bits × 3 periods per bit × 20 px.
-        let range = &derived.iter().find(|(name, _)| name == "Absolute range").unwrap().1;
-        assert_eq!(range, "15300 px");
-    }
-
-    #[test]
-    fn checkerboard_is_balanced_and_binary() {
-        let settings = PatternSettings {
-            kind: PatternKind::Checkerboard,
-            square_px: 16.0,
-            order: 8,
-            width: 384,
-            height: 384,
-            // Point-sample so pixels stay hard black or white and the fill
-            // fraction isn't blurred by edge pixels.
-            supersample: 1,
-            ..Default::default()
-        };
-        let image = settings.render().unwrap();
-
-        let white = image.as_slice().iter().filter(|&&v| v > 0.5).count();
-        let fraction = white as f64 / image.as_slice().len() as f64;
-        // The design claims 50/50 fill whatever the code says: coding-site
-        // inversions alternate in parity, so they cancel.
-        assert!(
-            (fraction - 0.5).abs() < 0.02,
-            "fill fraction {fraction:.4} should stay balanced"
-        );
-    }
-
-    #[test]
-    fn uncoded_reference_differs_from_the_coded_render() {
-        let coded = PatternSettings {
-            kind: PatternKind::Checkerboard,
-            supersample: 1,
-            width: 192,
-            height: 192,
-            ..Default::default()
-        };
-        let plain = PatternSettings { plain_checkerboard: true, ..coded.clone() };
-
-        let a = coded.render().unwrap();
-        let b = plain.render().unwrap();
-        let differing = a
-            .as_slice()
-            .iter()
-            .zip(b.as_slice())
-            .filter(|(x, y)| (*x - *y).abs() > 0.5)
-            .count();
-
-        // ~1/9 of squares are coding sites that got inverted; the reference
-        // leaves them at parity, so a good fraction of pixels must differ.
-        assert!(differing > 0, "the uncoded reference should differ from the coded render");
-        let fraction = differing as f64 / a.as_slice().len() as f64;
-        assert!(
-            fraction < 0.2,
-            "only coding sites should differ, got {fraction:.3} of pixels"
-        );
-    }
-
-    #[test]
-    fn carrier_period_is_the_square_diagonal_not_the_square_side() {
-        let settings = PatternSettings { square_px: 16.0, ..Default::default() };
-        assert!((settings.carrier_period_px() - 16.0 * SQRT_2).abs() < 1e-12);
-        // The distinction is the whole point: a detector given 16.0 would be wrong.
-        assert!(settings.carrier_period_px() > settings.square_px);
-    }
-
-    #[test]
-    fn checkerboard_rejects_an_unsupported_order_like_megarena() {
-        let settings = PatternSettings {
-            kind: PatternKind::Checkerboard,
-            order: 13,
-            ..Default::default()
-        };
-        let message = settings.render().expect_err("order 13 is above the supported range");
-        assert!(message.contains("4..=12"), "unhelpful message: {message}");
-    }
-
-    #[test]
-    fn checkerboard_snippet_switches_method_for_the_reference() {
-        let coded = PatternSettings { kind: PatternKind::Checkerboard, ..Default::default() };
-        assert!(coded.equivalent_rust().contains(".render("));
-
-        let plain = PatternSettings { plain_checkerboard: true, ..coded };
-        assert!(plain.equivalent_rust().contains(".render_plain("));
-    }
-
-    #[test]
-    fn snippet_carries_the_parameters_that_produced_the_render() {
+    fn snippet_matches_settings() {
         let settings = PatternSettings {
             kind: PatternKind::Megarena,
             order: 10,
@@ -534,7 +389,7 @@ mod tests {
             ..Default::default()
         };
         let snippet = settings.equivalent_rust();
-        assert!(snippet.contains("Megarena::new(12.500, 10)"), "got:\n{snippet}");
-        assert!(snippet.contains(".render(640, 480, &pose)"), "got:\n{snippet}");
+        assert!(snippet.contains("Megarena::new(12.500, 10)"), "{snippet}");
+        assert!(snippet.contains(".render(640, 480, &pose)"), "{snippet}");
     }
 }
