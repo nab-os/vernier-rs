@@ -44,6 +44,47 @@ out of the loop. Hoisting it would speed up the CLI and the test suite as much
 as this page, but it is a change to the library, not to this crate, so it is
 left alone here.
 
+## The two views
+
+The header switches between them, and they share the pattern selection: pick a
+pattern in one and it is the pattern in the other.
+
+**Generator** renders a pattern and hands it back as a PNG.
+
+**Spectrum explorer** puts a virtual camera in front of that pattern and shows
+every stage the detector passes through as you move it:
+
+    camera image -> FFT -> peak selection -> band-pass -> reconstruction -> phases
+
+Drag the camera image: left to translate, right to rotate about Z and change
+distance, middle to tilt out of plane, the wheel for distance, shift for
+ten-times-finer motion. The point is to watch the spectrum answer. Translation
+leaves the peaks where they are and only turns the phase; rotation swings them
+around the origin; distance moves them radially; the out-of-plane angles pull
+the pair off its right angle until the search band or the Gaussian window stops
+tracking them.
+
+The detector is the library itself — `vernier-spectral` and `vernier-cpu`
+compiled to WebAssembly — running in the page. There is no server.
+
+Two things worth knowing:
+
+- The explorer needs to sample a pattern at an arbitrary point of its plane,
+  which the **Stamp** and **QR-like** stubs cannot do: they have no layout and
+  ignore the pose. The explorer says so and leaves the stages blank. The other
+  three work.
+- **Log scale on the FFT panels** is on by default. A coded pattern's carrier
+  peaks stand orders of magnitude above its sidebands, so a linear ramp shows
+  two white dots on black and nothing else; measured in the browser, the mean
+  grey of the FFT panel is 40/255 with the log on and 0.1/255 with it off.
+  Linear is the honest view of the magnitudes, and the one that shows how
+  completely the peaks dominate.
+
+Out-of-plane tilt is the freedom `PatternPose` cannot express — it carries x, y
+and θ only — so the explorer keeps its own six-freedom pose and does the
+projection in `camera.rs`, sampling the library's patterns through it. Nothing
+about the patterns is reimplemented.
+
 ## What you can set
 
 | Section | Parameters |

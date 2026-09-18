@@ -413,3 +413,111 @@ code {
   font-size: 12.5px;
   line-height: 1.55;
 }
+
+/* ---------------------------------------------------------------------------
+   Spectrum explorer
+   --------------------------------------------------------------------------- */
+
+.masthead-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.view-switch {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.view-button {
+    padding: 0.35rem 0.9rem;
+    border: 1px solid #333;
+    border-radius: 999px;
+    background: transparent;
+    color: #bbb;
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.view-button:hover {
+    border-color: #555;
+    color: #eee;
+}
+
+.view-button.is-active {
+    background: #2b6cb0;
+    border-color: #2b6cb0;
+    color: #fff;
+}
+
+/* A stub generator stays selectable — the notice explains why it is empty —
+   but it should not look like a working choice. */
+.type-button.is-unavailable {
+    opacity: 0.55;
+}
+
+.stage-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+@media (max-width: 1100px) {
+    .stage-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+.stage-panel {
+    margin: 0;
+    min-width: 0;
+}
+
+.panel-title {
+    font-size: 0.8rem;
+    color: #9a9a9a;
+    margin-bottom: 0.3rem;
+}
+
+/* The canvas is the stage's own pixel size and CSS scales it to the column;
+   the overlay sits on top in the same coordinate space. */
+.panel-canvas {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    background: #000;
+    border: 1px solid #2a2a2a;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.panel-canvas .preview {
+    display: block;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+}
+
+.panel-canvas .overlay,
+.panel-canvas .drag-surface {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.panel-canvas .overlay {
+    pointer-events: none;
+}
+
+.panel-canvas.is-draggable .drag-surface {
+    cursor: grab;
+    /* The wheel and the drag belong to the camera, not to the page. */
+    touch-action: none;
+}
+
+.panel-canvas.is-draggable .drag-surface:active {
+    cursor: grabbing;
+}

@@ -16,6 +16,9 @@ use vernier_patterns::qrcode::QrLike;
 use vernier_patterns::stamp::Stamp;
 use vernier_patterns::PatternPose;
 
+/// Brightness of a pattern at a point of its own plane, with no pose applied.
+pub type Sampler = Box<dyn Fn(Real, Real) -> Real>;
+
 /// LFSR orders `vernier_patterns::lfsr::Lfsr::maximal` accepts.
 pub const ORDER_RANGE: std::ops::RangeInclusive<u32> = 4..=12;
 
@@ -91,6 +94,16 @@ impl PatternKind {
 
     /// Whether `vernier-patterns` still returns a blank image for this kind.
     /// The UI says so out loud rather than showing an unexplained black square.
+    /// Whether the explorer can ask this pattern for the brightness at an
+    /// arbitrary point of its plane.
+    ///
+    /// The six-degree-of-freedom camera works by projecting each output pixel
+    /// back onto the pattern plane and sampling there, which the stubs cannot
+    /// answer: they have no layout behind them and ignore the pose entirely.
+    pub fn has_point_sampler(self) -> bool {
+        matches!(self, Self::Periodic | Self::Megarena | Self::Checkerboard)
+    }
+
     pub fn is_stub(self) -> bool {
         matches!(self, PatternKind::Stamp | PatternKind::QrLike)
     }
@@ -188,6 +201,64 @@ impl Default for PatternSettings {
 }
 
 impl PatternSettings {
+    /// Brightness at an arbitrary point of the pattern plane, with no pose
+    /// applied — what the explorer's camera samples through its homography.
+    ///
+    /// Returns `Err` for the stub generators, which have no layout to sample.
+    pub fn sampler(&self) -> Result<Sampler, String> {
+        match self.kind {
+            // `Periodic::intensity_at` is a one-dimensional stripe carrier,
+            // independent of y, so it puts a single lobe pair in the spectrum
+            // and a two-direction peak search has nothing to find in the
+            // second direction. Building the grid from the pattern's own two
+            // phase functions gives the (1+cos)(1+cos)/4 model that this
+            // crate's GPU renderer and the C++ reference both use.
+            PatternKind::Periodic => {
+                let pattern = Periodic::new(self.period_px);
+                Ok(Box::new(move |x, y| {
+                    let c1 = pattern.phase1_at(x, y).cos();
+                    let c2 = pattern.phase2_at(x, y).cos();
+                    (1.0 + c1) * (1.0 + c2) / 4.0
+                }))
+            }
+            PatternKind::Megarena => Megarena::new(self.period_px, self.order)
+                .map(|pattern| {
+                    let pattern = pattern.with_lfsr_offset(self.lfsr_offset);
+                    Box::new(move |x, y| pattern.intensity_at(x, y)) as Sampler
+                })
+                .ok_or_else(|| self.order_error()),
+            PatternKind::Checkerboard => Checkerboard::new(self.square_px, self.order)
+                .map(|pattern| {
+                    let pattern = pattern.with_lfsr_offset(self.lfsr_offset);
+                    let plain = self.plain_checkerboard;
+                    Box::new(move |x, y| {
+                        if plain {
+                            pattern.plain_intensity_at(x, y)
+                        } else {
+                            pattern.intensity_at(x, y)
+                        }
+                    }) as Sampler
+                })
+                .ok_or_else(|| self.order_error()),
+            PatternKind::Stamp | PatternKind::QrLike => Err(format!(
+                "{} has no layout upstream ({}), so there is nothing to sample at a pose. \
+                 Pick Periodic, Megarena or Checkerboard.",
+                self.kind.label(),
+                self.kind.source_path()
+            )),
+        }
+    }
+
+    /// The carrier period the explorer scales the camera against: the distance
+    /// between fringes, which for a checkerboard is the diagonal `a·√2` and not
+    /// the square side.
+    pub fn explorer_period_px(&self) -> Real {
+        match self.kind {
+            PatternKind::Checkerboard => self.carrier_period_px(),
+            _ => self.period_px,
+        }
+    }
+
     /// The pose the generators take, with the UI's degrees converted to radians.
     pub fn pose(&self) -> PatternPose {
         PatternPose::new(self.pose_x, self.pose_y, self.theta_deg.to_radians())
