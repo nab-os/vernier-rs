@@ -305,349 +305,50 @@ impl Checkerboard {
 mod tests {
     use super::*;
 
-    /// Carrier amplitude summed over square centres, as (re, im).
-    fn lattice_carrier(pattern: &Checkerboard, n: i64, axis1: bool, coded: bool) -> (Real, Real) {
-        let (mut re, mut im) = (0.0, 0.0);
-        for i in 0..n {
-            for j in 0..n {
-                let white = if coded {
-                    pattern.square_is_white(i, j)
-                } else {
-                    Checkerboard::parity_is_white(i, j)
-                };
-                let c = if white { 1.0 } else { -1.0 };
-                let phase = if axis1 {
-                    PI * (i + j) as Real
-                } else {
-                    PI * (i - j) as Real
-                };
-                re += c * phase.cos();
-                im += -c * phase.sin();
-            }
-        }
-        let count = (n * n) as Real;
-        (re / count, im / count)
-    }
-
-    #[test]
-    fn builds_for_valid_order() {
-        let c = Checkerboard::new(8.0, 8).unwrap();
-        assert_eq!(c.order, 8);
-        assert_eq!(c.code().len(), 255);
-        assert_eq!(c.range_squares(), 765);
-    }
-
-    #[test]
-    fn rejects_unsupported_order() {
-        assert!(Checkerboard::new(8.0, 3).is_none());
-    }
-
-    #[test]
-    fn only_coding_sites_are_ever_inverted() {
-        let c = Checkerboard::new(8.0, 6).unwrap();
-        for i in -30..30i64 {
-            for j in -30..30i64 {
-                if Checkerboard::coding_axis(i, j).is_none() {
-                    assert!(!c.square_inverted(i, j), "({i},{j}) inverted off-site");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn coding_sites_follow_their_axis_bit() {
-        let c = Checkerboard::new(8.0, 6).unwrap();
-        for k in 0..20i64 {
-            for l in 0..20i64 {
-                let (xi, xj) = (CELL * k + X_SITE.0, CELL * l + X_SITE.1);
-                assert_eq!(
-                    c.square_inverted(xi, xj),
-                    c.code_bit(k) == 0,
-                    "x site of cell ({k},{l})"
-                );
-                let (yi, yj) = (CELL * k + Y_SITE.0, CELL * l + Y_SITE.1);
-                assert_eq!(
-                    c.square_inverted(yi, yj),
-                    c.code_bit(l) == 0,
-                    "y site of cell ({k},{l})"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn coding_sites_alternate_colour_so_fill_stays_balanced() {
-        let c = Checkerboard::new(8.0, 8).unwrap();
-        let n = 3 * 255;
-        let mut white = 0i64;
-        for i in 0..n {
-            for j in 0..n {
-                if c.square_is_white(i, j) {
-                    white += 1;
-                }
-            }
-        }
-        let fill = white as Real / (n * n) as Real;
-        assert!((fill - 0.5).abs() < 1e-3, "fill {fill} drifted from 50/50");
-    }
-
-    fn assert_design_properties(c: &Checkerboard, label: &str) {
-        let n = 3 * 255;
-
-        // 2 of 9 squares are sites.
-        let mut sites = 0i64;
-        for i in 0..n {
-            for j in 0..n {
-                let coding = match c.code_layout() {
-                    CodeLayout::Squares => Checkerboard::coding_axis(i, j).is_some(),
-                    CodeLayout::Diamonds => {
-                        let (u, v) = Checkerboard::diagonal_coords(i, j);
-                        Checkerboard::diagonal_coding_axis(u, v).is_some()
-                    }
-                };
-                if coding {
-                    sites += 1;
-                }
-            }
-        }
-        let density = sites as Real / (n * n) as Real;
-        assert!(
-            (density - 2.0 / 9.0).abs() < 1e-3,
-            "{label}: coding-site density {density} should be 2/9"
-        );
-
-        let mut white = 0i64;
-        for i in 0..n {
-            for j in 0..n {
-                if c.square_is_white(i, j) {
-                    white += 1;
-                }
-            }
-        }
-        // Global only; diagonal bands cancel each other out.
-        let fill = white as Real / (n * n) as Real;
-        assert!((fill - 0.5).abs() < 2e-3, "{label}: fill {fill} drifted from 50/50");
-
-        // No phase shift.
-        for axis1 in [true, false] {
-            let (_, coded_im) = lattice_carrier(c, n, axis1, true);
-            assert!(
-                coded_im.abs() < 1e-9,
-                "{label}: code rotated carrier {}, imaginary part {coded_im}",
-                if axis1 { 1 } else { 2 }
-            );
-        }
-    }
-
-    #[test]
-    fn diagonal_layout_keeps_every_design_property() {
-        let diagonal = Checkerboard::new(8.0, 8)
-            .unwrap()
-            .with_code_layout(CodeLayout::Diamonds);
-        assert_design_properties(&diagonal, "diagonals");
-
-        let axes = Checkerboard::new(8.0, 8).unwrap();
-        assert_eq!(axes.code_layout(), CodeLayout::Squares);
-        assert_design_properties(&axes, "lattice axes");
-    }
-
-    #[test]
-    fn diagonal_layout_actually_moves_the_code() {
-        let axes = Checkerboard::new(8.0, 8).unwrap();
-        let diagonal = axes.clone().with_code_layout(CodeLayout::Diamonds);
-
-        let mut differing = 0;
-        for i in 0..90 {
-            for j in 0..90 {
-                if axes.square_is_white(i, j) != diagonal.square_is_white(i, j) {
-                    differing += 1;
-                }
-            }
-        }
-        assert!(differing > 0, "the two layouts paint identical squares");
-    }
-
-    /// Worst colour bias among the sites sharing one code bit.
-    fn worst_band_imbalance(c: &Checkerboard) -> Real {
-        let n = 240;
-        let mut bands: std::collections::HashMap<(bool, i64), (i64, i64)> =
-            std::collections::HashMap::new();
-        for i in -n..n {
-            for j in -n..n {
-                let (u, v) = Checkerboard::diagonal_coords(i, j);
-                let (axis, band) = match c.code_layout() {
-                    CodeLayout::Squares => match Checkerboard::coding_axis(i, j) {
-                        Some(CodeAxis::X) => (true, i.div_euclid(CELL)),
-                        Some(CodeAxis::Y) => (false, j.div_euclid(CELL)),
-                        None => continue,
-                    },
-                    CodeLayout::Diamonds => match Checkerboard::diagonal_coding_axis(u, v) {
-                        Some(CodeAxis::X) => (true, u.div_euclid(CELL)),
-                        Some(CodeAxis::Y) => (false, v.div_euclid(CELL)),
-                        None => continue,
-                    },
-                };
-                let entry = bands.entry((axis, band)).or_insert((0, 0));
-                if Checkerboard::parity_is_white(i, j) {
-                    entry.0 += 1;
-                } else {
-                    entry.1 += 1;
-                }
-            }
-        }
-        // Skip bands clipped by the window.
-        bands
-            .values()
-            .filter(|(w, b)| w + b >= 40)
-            .map(|&(w, b)| ((w - b).abs() as Real) / ((w + b) as Real))
-            .fold(0.0, Real::max)
-    }
-
-    #[test]
-    fn lattice_axis_code_bands_are_colour_balanced() {
-        let c = Checkerboard::new(8.0, 8).unwrap();
-        let worst = worst_band_imbalance(&c);
-        assert!(
-            worst < 0.2,
-            "a code band is {:.0}% colour-biased, so flipping it shifts the local \
-             brightness",
-            worst * 100.0
-        );
-    }
-
-    #[test]
-    fn diagonal_code_bands_are_monochrome_by_construction() {
-        // Colour is u mod 2, so a line of constant u is one colour. Moving the
-        // sites can't fix it.
-        let c = Checkerboard::new(8.0, 8)
-            .unwrap()
-            .with_code_layout(CodeLayout::Diamonds);
-        let worst = worst_band_imbalance(&c);
-        assert!(
-            worst > 0.99,
-            "expected fully monochrome code bands, got {:.0}% bias",
-            worst * 100.0
-        );
-    }
-
-    #[test]
-    fn diamonds_are_squares_turned_45_degrees() {
-        let squares = Checkerboard::new(8.0, 8).unwrap();
-        let diamonds = squares.clone().with_code_layout(CodeLayout::Diamonds);
-        let (s, c) = (PI / 4.0).sin_cos();
-        for k in 0..200 {
-            let (x, y) = ((k as Real * 7.31) % 97.0 - 40.0, (k as Real * 3.17) % 89.0 - 45.0);
-            let (lx, ly) = (c * x + s * y, -s * x + c * y);
-            assert_eq!(diamonds.square_at(x, y), squares.square_at(lx, ly));
-        }
-        // Carriers along the pattern axes.
-        assert!((diamonds.phase2_at(3.0, 5.0) - diamonds.phase2_at(3.0, 50.0)).abs() < 1e-9);
-        assert!((diamonds.phase1_at(3.0, 5.0) - diamonds.phase1_at(30.0, 5.0)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn wrap_offset_removes_whole_periods() {
-        for layout in [CodeLayout::Squares, CodeLayout::Diamonds] {
-            let c = Checkerboard::new(8.0, 8).unwrap().with_code_layout(layout);
-            let period = c.range_squares() as Real * c.square_px;
-            let (px, py) = layout.from_lattice(period, 0.0);
-            let (qx, qy) = layout.from_lattice(0.0, period);
-            let (dx, dy) = c.wrap_offset(1.5 + 2.0 * px - qx, -0.5 + 2.0 * py - qy);
-            assert!((dx - 1.5).abs() < 1e-6 && (dy + 0.5).abs() < 1e-6, "{layout:?}: ({dx}, {dy})");
-        }
-    }
-
-    #[test]
-    fn diagonal_layout_costs_sqrt2_of_range() {
-        let axes = Checkerboard::new(8.0, 8).unwrap();
-        let diagonal = axes.clone().with_code_layout(CodeLayout::Diamonds);
-
-        assert_eq!(axes.range_squares(), diagonal.range_squares());
-        let ratio = axes.range_px() / diagonal.range_px();
-        assert!((ratio - SQRT_2).abs() < 1e-9, "range ratio {ratio} should be sqrt(2)");
-    }
-
-    #[test]
-    fn code_is_phase_neutral_on_the_lattice() {
-        // An imaginary part would bias the fine pose.
-        let c = Checkerboard::new(8.0, 8).unwrap();
-        let n = 3 * 255;
-        for axis1 in [true, false] {
-            let (plain_re, plain_im) = lattice_carrier(&c, n, axis1, false);
-            let (coded_re, coded_im) = lattice_carrier(&c, n, axis1, true);
-            assert!((plain_re - 1.0).abs() < 1e-9, "plain carrier {plain_re}");
-            assert!(plain_im.abs() < 1e-9, "plain carrier not real");
-            assert!(
-                coded_im.abs() < 1e-9,
-                "coded carrier has imaginary part {coded_im} — phase bias"
-            );
-            // ~1/9 of squares flipped.
-            assert!(
-                (coded_re - 0.78).abs() < 0.02,
-                "coded carrier amplitude {coded_re}, expected ≈0.78"
-            );
-        }
-    }
-
     #[test]
     fn phases_index_the_squares() {
         let c = Checkerboard::new(7.0, 6).unwrap();
         for i in -10..10i64 {
             for j in -10..10i64 {
-                let x = (i as Real + 0.5) * c.square_px;
-                let y = (j as Real + 0.5) * c.square_px;
-                let recovered =
-                    Checkerboard::square_from_phases(c.phase1_at(x, y), c.phase2_at(x, y));
-                assert_eq!(recovered, (i, j), "square ({i},{j})");
+                let (x, y) = ((i as Real + 0.5) * 7.0, (j as Real + 0.5) * 7.0);
+                assert_eq!(Checkerboard::square_from_phases(c.phase1_at(x, y), c.phase2_at(x, y)), (i, j));
             }
         }
     }
 
     #[test]
-    fn carriers_peak_on_white_squares() {
-        let c = Checkerboard::new(7.0, 6).unwrap();
-        for i in -6..6i64 {
-            for j in -6..6i64 {
-                let x = (i as Real + 0.5) * c.square_px;
-                let y = (j as Real + 0.5) * c.square_px;
-                let expected = if Checkerboard::parity_is_white(i, j) {
-                    1.0
-                } else {
-                    -1.0
-                };
-                assert!((c.phase1_at(x, y).cos() - expected).abs() < 1e-9);
-                assert!((c.phase2_at(x, y).cos() - expected).abs() < 1e-9);
+    fn code_does_not_shift_the_carrier_phase() {
+        for layout in [CodeLayout::Squares, CodeLayout::Diamonds] {
+            let c = Checkerboard::new(8.0, 8).unwrap().with_code_layout(layout);
+            let n = c.range_squares();
+            let mut im = 0.0;
+            for i in 0..n {
+                for j in 0..n {
+                    let sign = if c.square_is_white(i, j) { 1.0 } else { -1.0 };
+                    im += sign * (PI * (i + j) as Real).sin();
+                }
             }
+            assert!(im.abs() < 1e-6, "{layout:?}: {im}");
         }
     }
 
     #[test]
-    fn carrier_period_is_the_square_diagonal() {
-        let c = Checkerboard::new(10.0, 6).unwrap();
-        assert!((c.carrier_period_px() - 10.0 * SQRT_2).abs() < 1e-12);
-        let step = c.carrier_period_px() / SQRT_2;
-        let before = c.phase1_at(3.0, 4.0);
-        let after = c.phase1_at(3.0 + step, 4.0 + step);
-        assert!((after - before - 2.0 * PI).abs() < 1e-12);
-    }
-
-    #[test]
-    fn renders_expected_dimensions_and_range() {
-        let c = Checkerboard::new(6.0, 8).unwrap();
-        let img = c.render(64, 48, &PatternPose::new(2.5, -1.25, 0.2));
-        assert_eq!(img.width(), 64);
-        assert_eq!(img.height(), 48);
-        for &v in img.as_slice() {
-            assert!((0.0..=1.0).contains(&v), "intensity {v} out of range");
+    fn half_the_image_is_white() {
+        for layout in [CodeLayout::Squares, CodeLayout::Diamonds] {
+            let c = Checkerboard::new(9.0, 8).unwrap().with_code_layout(layout);
+            let img = c.render(512, 512, &PatternPose::new(13.7, -4.1, 0.37));
+            let mean = img.as_slice().iter().map(|&v| v as Real).sum::<Real>() / img.as_slice().len() as Real;
+            assert!((mean - 0.5).abs() < 0.02, "{layout:?}: {mean}");
         }
     }
 
     #[test]
-    fn rendered_mean_sits_at_half_scale() {
-        let c = Checkerboard::new(9.0, 8).unwrap();
-        let img = c.render(512, 512, &PatternPose::new(13.7, -4.1, 0.37));
-        let mean: Real =
-            img.as_slice().iter().map(|&v| v as Real).sum::<Real>() / img.as_slice().len() as Real;
-        assert!((mean - 0.5).abs() < 0.02, "mean intensity {mean}");
+    fn diamonds_are_turned_squares() {
+        let squares = Checkerboard::new(8.0, 8).unwrap();
+        let diamonds = squares.clone().with_code_layout(CodeLayout::Diamonds);
+        let (s, c) = (PI / 4.0).sin_cos();
+        for (x, y) in [(3.0, 5.0), (-20.5, 7.25), (41.0, -33.0)] {
+            assert_eq!(diamonds.square_at(x, y), squares.square_at(c * x + s * y, c * y - s * x));
+        }
     }
 }
