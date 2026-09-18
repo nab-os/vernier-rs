@@ -43,12 +43,31 @@
   box-sizing: border-box;
 }
 
+/* The app is exactly one viewport tall: the masthead takes what it needs and
+   the two columns share the rest, each scrolling inside itself. Sizing the
+   panel against 100vh instead would ignore the masthead above it and hang it
+   off the bottom of the screen. */
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
   padding: 0;
   background: var(--bg);
   color: var(--text);
   font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+}
+
+/* Dioxus mounts the app inside this wrapper, so it — not <body> — is what the
+   masthead and the layout are laid out in. */
+#main {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 code {
@@ -59,6 +78,7 @@ code {
 /* ---- masthead ---------------------------------------------------------- */
 
 .masthead {
+  flex: 0 0 auto;
   padding: 24px 24px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
@@ -82,9 +102,14 @@ code {
 .layout {
   display: grid;
   grid-template-columns: 336px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 20px;
-  align-items: start;
-  padding: 20px 24px 40px;
+  align-items: stretch;
+  padding: 20px 24px;
+  flex: 1 1 auto;
+  /* Without this the grid refuses to shrink below its content and the columns
+     push past the bottom of the screen again. */
+  min-height: 0;
 }
 
 @media (max-width: 900px) {
@@ -100,17 +125,35 @@ code {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow: hidden;
-  position: sticky;
-  top: 16px;
-  max-height: calc(100vh - 32px);
+  min-height: 0;
   overflow-y: auto;
 }
 
+/* Narrow enough that the two columns stack, and a single scrolling page reads
+   better than three nested scroll areas. */
 @media (max-width: 900px) {
-  .panel {
-    position: static;
-    max-height: none;
+  html,
+  body {
+    height: auto;
+  }
+
+  body {
+    overflow: visible;
+  }
+
+  #main {
+    display: block;
+    height: auto;
+  }
+
+  .layout {
+    grid-template-rows: none;
+    min-height: 0;
+  }
+
+  .panel,
+  .stage {
+    overflow-y: visible;
   }
 }
 
@@ -309,6 +352,8 @@ code {
   border-radius: 10px;
   padding: 16px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .stage-head {
