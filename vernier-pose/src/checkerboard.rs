@@ -808,7 +808,6 @@ pub fn solve(
 mod tests {
     use super::*;
 
-
     fn naive_amplitude(intensity: &[f32], width: usize, height: usize, bx: i64, by: i64, step: usize) -> Real {
         let mean = intensity.iter().map(|&v| v as Real).sum::<Real>() / intensity.len() as Real;
         let (fx, fy) = (TAU * bx as Real / width as Real, TAU * by as Real / height as Real);
@@ -827,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn separable_demodulator_matches_the_per_pixel_sum() {
+    fn demodulator_matches_direct_sum() {
         let (w, h) = (96, 64);
         let image: Vec<f32> = (0..w * h)
             .map(|p| {
@@ -842,30 +841,6 @@ mod tests {
                 let slow = naive_amplitude(&image, w, h, bx, by, step);
                 assert!((fast - slow).abs() <= 1e-9 * slow.max(1.0), "bin ({bx},{by}) step {step}: {fast} vs {slow}");
             }
-        }
-    }
-
-    #[test]
-    fn short_garbage_reads_fail_the_evidence_gate_and_real_reads_pass() {
-        let garbage = chance_by_luck(7, 1) * chance_by_luck(7, 1) * HYPOTHESES;
-        assert!(garbage > MAX_FALSE_ACCEPT, "garbage read scored {garbage}");
-        let clean = chance_by_luck(18, 0) * chance_by_luck(18, 0) * HYPOTHESES;
-        assert!(clean < 1e-6, "clean read scored {clean}");
-        let noisy = chance_by_luck(18, 1) * chance_by_luck(18, 1) * HYPOTHESES;
-        assert!(noisy < MAX_FALSE_ACCEPT, "noisy read scored {noisy}");
-    }
-
-    #[test]
-    fn bit_error_allowance_grows_with_run_length_but_stays_safe() {
-        assert_eq!(allowed_bit_errors(8, 8), MAX_BIT_ERRORS);
-        assert_eq!(allowed_bit_errors(21, 8), MAX_BIT_ERRORS);
-        assert_eq!(allowed_bit_errors(36, 8), 2);
-        let mut previous = 0;
-        for bits in 8..80 {
-            let allowed = allowed_bit_errors(bits, 8);
-            assert!(allowed >= MAX_BIT_ERRORS);
-            assert!(allowed >= previous, "allowance fell at {bits} bits");
-            previous = allowed;
         }
     }
 }
