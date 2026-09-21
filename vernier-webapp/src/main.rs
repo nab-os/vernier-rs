@@ -7,13 +7,19 @@
 //! canvas. Nothing about the pattern is reimplemented here, so what you see is
 //! what the library generates.
 
+mod camera;
 mod canvas;
 mod controls;
+mod explorer;
+#[cfg(test)]
+mod explorer_tests;
 mod pattern;
+mod spectral;
 
 use dioxus::prelude::*;
 
 use controls::{NumberField, Section, Toggle};
+use explorer::{Explorer, ExplorerSettings};
 use pattern::{PatternKind, PatternSettings, MAX_SIDE, MIN_SIDE, ORDER_RANGE};
 
 const MAIN_CSS: Asset = asset!("/assets/main.css");
@@ -32,9 +38,75 @@ struct RenderReport {
     error: Option<String>,
 }
 
+/// Which of the two tools is on screen. They share the pattern selection, so
+/// switching views keeps whatever pattern was being looked at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum View {
+    Generator,
+    Explorer,
+}
+
 #[component]
 fn App() -> Element {
-    let mut settings = use_signal(PatternSettings::default);
+    let settings = use_signal(PatternSettings::default);
+    let mut view = use_signal(|| View::Generator);
+    let explorer = use_signal(|| {
+        ExplorerSettings::for_period(PatternSettings::default().explorer_period_px())
+    });
+
+    rsx! {
+        document::Title { "Vernier patterns" }
+        document::Link { rel: "stylesheet", href: MAIN_CSS }
+
+        header { class: "masthead",
+            div { class: "masthead-head",
+                h1 {
+                    match view() {
+                        View::Generator => "Vernier pattern generator",
+                        View::Explorer => "Vernier spectrum explorer",
+                    }
+                }
+                nav { class: "view-switch",
+                    button {
+                        r#type: "button",
+                        class: "view-button {selected(view() == View::Generator)}",
+                        onclick: move |_| view.set(View::Generator),
+                        "Generator"
+                    }
+                    button {
+                        r#type: "button",
+                        class: "view-button {selected(view() == View::Explorer)}",
+                        onclick: move |_| view.set(View::Explorer),
+                        "Spectrum explorer"
+                    }
+                }
+            }
+            p { class: "subtitle",
+                match view() {
+                    View::Generator => rsx! {
+                        "Every pattern below is rendered by "
+                        code { "vernier-patterns" }
+                        " compiled to WebAssembly — the same generators the CLI and the round-trip tests use."
+                    },
+                    View::Explorer => rsx! {
+                        "The detector runs in this page: "
+                        code { "vernier-spectral" }
+                        " compiled to WebAssembly, transforming each frame as you move the camera."
+                    },
+                }
+            }
+        }
+
+        match view() {
+            View::Generator => rsx! { GeneratorView { settings } },
+            View::Explorer => rsx! { Explorer { settings, explorer } },
+        }
+    }
+}
+
+#[component]
+fn GeneratorView(settings: Signal<PatternSettings>) -> Element {
+    let mut settings = settings;
     let mut report = use_signal(RenderReport::default);
     let mut actual_size = use_signal(|| true);
 
@@ -59,18 +131,6 @@ fn App() -> Element {
     let current = settings.read().clone();
 
     rsx! {
-        document::Title { "Vernier pattern generator" }
-        document::Link { rel: "stylesheet", href: MAIN_CSS }
-
-        header { class: "masthead",
-            h1 { "Vernier pattern generator" }
-            p { class: "subtitle",
-                "Every pattern below is rendered by "
-                code { "vernier-patterns" }
-                " compiled to WebAssembly — the same generators the CLI and the round-trip tests use."
-            }
-        }
-
         main { class: "layout",
             aside { class: "panel",
 
@@ -244,7 +304,7 @@ fn App() -> Element {
 
 /// The fields specific to the selected generator. Split out of [`App`] so the
 /// per-kind parameter list stays readable next to the shared sections.
-fn pattern_fields(mut settings: Signal<PatternSettings>, current: &PatternSettings) -> Element {
+pub(crate) fn pattern_fields(mut settings: Signal<PatternSettings>, current: &PatternSettings) -> Element {
     match current.kind {
         PatternKind::Periodic => rsx! {
             NumberField {
@@ -385,7 +445,7 @@ fn pattern_fields(mut settings: Signal<PatternSettings>, current: &PatternSettin
 }
 
 /// Class fragment marking the active choice in a button group.
-fn selected(active: bool) -> &'static str {
+pub(crate) fn selected(active: bool) -> &'static str {
     if active { "is-active" } else { "" }
 }
 
