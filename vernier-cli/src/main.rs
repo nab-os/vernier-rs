@@ -82,6 +82,7 @@ fn main() {
                 code_size: a.code_size,
                 plain: a.plain,
                 diamonds: a.diamonds,
+                corner_radius: a.corner_radius,
                 output: std::path::PathBuf::from(&a.output),
             };
             if let Err(e) = render_checkerboard::run(&args) {
