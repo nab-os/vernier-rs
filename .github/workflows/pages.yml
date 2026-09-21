@@ -1,0 +1,73 @@
+name: Pages
+
+# Publishes the webapp to https://nab-os.github.io/vernier-rs/. Requires Pages
+# to be enabled for the repository with "GitHub Actions" as the source; until
+# then this workflow builds and the deploy step fails.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "vernier-webapp/**"
+      - "vernier-core/**"
+      - "vernier-cpu/**"
+      - "vernier-patterns/**"
+      - "vernier-spectral/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and never cancel one halfway: a half-published site is
+# worse than a stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # The webapp is its own workspace, so this is where its target dir already
+  # lands; naming it keeps the artifact path below honest.
+  CARGO_TARGET_DIR: ${{ github.workspace }}/vernier-webapp/target
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vernier-webapp
+
+      # Building the CLI from source costs several minutes per run; binstall
+      # fetches the release binary instead.
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall -y --locked dioxus-cli@0.7.10
+
+      # --base-path, not a Dioxus.toml entry: GitHub Pages serves a project site
+      # under /<repo>/, but `dx serve` locally does not, and baking the prefix
+      # into the config would move the dev URL too. Wrong or missing, the page
+      # loads and then 404s on its own JavaScript.
+      - run: dx bundle --release --platform web --base-path vernier-rs
+        working-directory: vernier-webapp
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: vernier-webapp/target/dx/vernier-webapp/release/web/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
