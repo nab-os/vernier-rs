@@ -2,3 +2,6 @@
 /.claude
 **/bin
 **/obj
+/vernier-webapp/target
+/vernier-webapp/dist
+/vernier-webapp/.dioxus

@@ -1,0 +1,46 @@
+[package]
+name = "vernier-webapp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Browser front-end for vernier-patterns: pick a pattern, tune every parameter, see it rendered."
+
+# Its own workspace on purpose. The root workspace builds for the host, and this
+# crate only makes sense on wasm32 — keeping it separate means `cargo build` at
+# the repo root never has to compile a web renderer it can't run.
+[workspace]
+
+[dependencies]
+vernier-core = { path = "../vernier-core" }
+vernier-patterns = { path = "../vernier-patterns" }
+
+dioxus = { version = "0.7.10", features = ["web"] }
+wasm-bindgen = "0.2"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "CanvasRenderingContext2d",
+    "Document",
+    "Element",
+    "HtmlAnchorElement",
+    "HtmlCanvasElement",
+    "ImageData",
+    "Performance",
+    "Window",
+]
+
+# The generators are per-pixel CPU loops, and an unoptimized wasm build takes
+# most of a second on a 512² render — enough to make dragging a slider feel
+# broken. Optimizing dev builds costs a little compile time and keeps
+# `dx serve` interactive.
+[profile.dev]
+opt-level = 2
+
+# Speed, not size: this is a compute-bound page whose whole job is running
+# per-pixel loops, and a few hundred KB of extra wasm is a better trade than a
+# preview that lags behind the slider.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
