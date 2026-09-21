@@ -16,6 +16,8 @@ pub struct RenderCheckerboardArgs {
     pub plain: bool,
     /// Diamond layout: code along the diagonals.
     pub diamonds: bool,
+    /// Corner radius as a fraction of a square side, 0.0 (square) to 0.5 (round).
+    pub corner_radius: f64,
     pub output: std::path::PathBuf,
 }
 
@@ -25,9 +27,18 @@ pub fn run(args: &RenderCheckerboardArgs) -> Result<(), String> {
     } else {
         CodeLayout::Squares
     };
+    // The builder clamps, but a value typed on the command line is more likely a
+    // mistake than a request to clamp.
+    if !(0.0..=0.5).contains(&args.corner_radius) {
+        return Err(format!(
+            "corner radius {} is out of range; must be 0.0..=0.5",
+            args.corner_radius
+        ));
+    }
     let pattern = Checkerboard::new(args.square_px, args.code_size)
         .ok_or_else(|| format!("unsupported code size {}; must be 4..=12", args.code_size))?
-        .with_code_layout(layout);
+        .with_code_layout(layout)
+        .with_corner_radius(args.corner_radius);
 
     let pose = PatternPose::new(args.x, args.y, args.theta);
     let image = if args.plain {

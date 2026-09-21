@@ -243,6 +243,11 @@ pub struct RenderCheckerboardArgs {
     /// diamonds: squares turned 45 degrees, code grid upright
     #[argh(switch)]
     pub diamonds: bool,
+
+    /// corner radius as a fraction of a square side, from 0.0 for square
+    /// corners (default) to 0.5 for as round as a square gets
+    #[argh(option, default = "0.0")]
+    pub corner_radius: f64,
 }
 
 /// Generate the explainer figures and measurements for the coded checkerboard.
