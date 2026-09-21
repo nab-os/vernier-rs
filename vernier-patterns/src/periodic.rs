@@ -53,15 +53,15 @@ impl Periodic {
         let row_min = ((pose_y_um - half_diag_um) / period_um).floor() as i64;
         let row_max = ((pose_y_um + half_diag_um) / period_um).ceil() as i64;
 
-        let mut cell_origins = Vec::new();
+        let mut dot_centers = Vec::new();
         for col in col_min..=col_max {
             for row in row_min..=row_max {
-                cell_origins.push([col as f32 * period_um, row as f32 * period_um]);
+                dot_centers.push([col as f32 * period_um, row as f32 * period_um]);
             }
         }
 
         renderer.render_quads(
-            &cell_origins,
+            &dot_centers,
             &vernier_render::RenderParams {
                 width,
                 height,

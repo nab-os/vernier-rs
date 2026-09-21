@@ -97,20 +97,20 @@ impl Megarena {
         let row_min = ((pose_y_um - half_diag_um) / period_um).floor() as i64;
         let row_max = ((pose_y_um + half_diag_um) / period_um).ceil() as i64;
 
-        let mut cell_origins = Vec::new();
+        let mut dot_centers = Vec::new();
         for col in col_min..=col_max {
             for row in row_min..=row_max {
                 if self.period_present(col)
                     && self.period_present(row)
                     && !(col.rem_euclid(3) == 0 && row.rem_euclid(3) == 0)
                 {
-                    cell_origins.push([col as f32 * period_um, row as f32 * period_um]);
+                    dot_centers.push([col as f32 * period_um, row as f32 * period_um]);
                 }
             }
         }
 
         renderer.render_quads(
-            &cell_origins,
+            &dot_centers,
             &vernier_render::RenderParams {
                 width,
                 height,
@@ -141,9 +141,13 @@ impl Megarena {
         let ux = x / self.period_px;
         let uy = y / self.period_px;
 
-        // Which integer period this point falls in, on each axis.
-        let pxi = ux.floor() as i64;
-        let pyi = uy.floor() as i64;
+        // Which dot this point belongs to, on each axis. Dots are *centred* on
+        // integer periods (the carrier peaks at `ux` integer), so the cell owning
+        // a point is the nearest integer, not the floor: with `floor` a single
+        // blob would straddle cells `k-1` and `k` and a removed dot would come
+        // out as a quadrant notch. C++ `(int)(x / period + 0.5)`.
+        let pxi = (ux + 0.5).floor() as i64;
+        let pyi = (uy + 0.5).floor() as i64;
 
         let x_on = self.period_present(pxi);
         let y_on = self.period_present(pyi);
@@ -215,6 +219,44 @@ mod tests {
                 == 1;
             assert_eq!(m.period_present(central), expected, "triple {triple}");
         }
+    }
+
+    #[test]
+    fn removed_corner_blanks_the_whole_dot() {
+        let m = Megarena::new(20.0, 8).unwrap();
+        let p = m.period_px;
+        // Lattice point (0, 0) is the dropped π/2-breaking corner (both indices
+        // ≡ 0 mod 3), and the dot centred there spans ±half a period. All of it
+        // must be dark: indexing cells by `floor` blanked only one quadrant and
+        // left an L-shaped notch on the three neighbouring dots.
+        for i in -49..=49 {
+            for j in -49..=49 {
+                let (x, y) = (i as Real * 0.01 * p, j as Real * 0.01 * p);
+                assert_eq!(m.intensity_at(x, y), 0.0, "({x}, {y}) should be dark");
+            }
+        }
+    }
+
+    #[test]
+    fn present_dot_is_symmetric_about_its_centre() {
+        let m = Megarena::new(20.0, 8).unwrap();
+        let p = m.period_px;
+        // Pick a present period whose left neighbour is absent, so a dot split
+        // across two cells would give different intensities either side.
+        let col = (1..100)
+            .find(|&c| m.period_present(c) && !m.period_present(c - 1))
+            .expect("the code has at least one 0 bit");
+        let row = 2; // within = 2, always present, and not a dropped corner
+        let (cx, cy) = (col as Real * p, row as Real * p);
+        for i in 1..=49 {
+            let d = i as Real * 0.01 * p;
+            let (left, right) = (m.intensity_at(cx - d, cy), m.intensity_at(cx + d, cy));
+            assert!(
+                (left - right).abs() < 1e-9,
+                "dot at col {col} is clipped at ±{d}: {left} vs {right}"
+            );
+        }
+        assert!(m.intensity_at(cx, cy) > 0.999);
     }
 
     #[test]

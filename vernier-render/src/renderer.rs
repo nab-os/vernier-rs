@@ -53,11 +53,11 @@ pub(crate) struct VertexData {
     pub local_corner: [f32; 2],
 }
 
-/// One entry per dot: the bottom-left corner of its period cell in µm.
+/// One entry per dot: the centre of its lattice point in µm.
 #[derive(Clone, Copy, Debug, Default, BufferContents)]
 #[repr(C)]
 pub(crate) struct InstanceData {
-    pub cell_origin: [f32; 2],
+    pub dot_center: [f32; 2],
 }
 
 // ---------------------------------------------------------------------------
@@ -331,19 +331,21 @@ impl PatternRenderer {
         }
     }
 
-    /// Renders `cell_origins` (one entry per period-cell in µm) into a
+    /// Renders `dot_centers` (one entry per visible dot, in µm) into a
     /// `width × height` grayscale image and returns it as a [`GrayImage`].
+    /// Each dot gets a period-wide quad centred on its lattice point, so an
+    /// absent dot leaves a whole dark blob rather than clipping its neighbours.
     ///
-    /// If `cell_origins` is empty the result is all-zero (no light).
+    /// If `dot_centers` is empty the result is all-zero (no light).
     pub fn render_quads(
         &self,
-        cell_origins: &[[f32; 2]],
+        dot_centers: &[[f32; 2]],
         params: &RenderParams,
     ) -> GrayImage {
         let width = params.width;
         let height = params.height;
 
-        if cell_origins.is_empty() {
+        if dot_centers.is_empty() {
             return GrayImage::zeros(width, height);
         }
 
@@ -359,7 +361,7 @@ impl PatternRenderer {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            cell_origins.iter().map(|&o| InstanceData { cell_origin: o }),
+            dot_centers.iter().map(|&c| InstanceData { dot_center: c }),
         )
         .unwrap();
 
@@ -461,7 +463,7 @@ impl PatternRenderer {
 
         unsafe {
             builder
-                .draw_indexed(6, cell_origins.len() as u32, 0, 0, 0)
+                .draw_indexed(6, dot_centers.len() as u32, 0, 0, 0)
                 .unwrap()
         };
 

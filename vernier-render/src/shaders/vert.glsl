@@ -2,8 +2,10 @@
 
 // Per-vertex: which corner of the unit cell [0,1]×[0,1]
 layout(location = 0) in vec2 local_corner;
-// Per-instance: bottom-left corner of the period cell in pattern space (µm)
-layout(location = 1) in vec2 cell_origin;
+// Per-instance: centre of the dot in pattern space (µm). The carrier peaks at
+// integer multiples of the period, so a dot's quad is centred on its lattice
+// point, not anchored at the cell's bottom-left corner.
+layout(location = 1) in vec2 dot_center;
 
 layout(push_constant) uniform PushConstantData {
     float cos_alpha;  // cos(pose.theta)
@@ -20,7 +22,7 @@ layout(location = 0) out vec2 out_pattern_pos;
 
 void main() {
     // Fragment position in pattern space (µm)
-    vec2 pat = cell_origin + local_corner * pc.period;
+    vec2 pat = dot_center + (local_corner - 0.5) * pc.period;
     out_pattern_pos = pat;
 
     // Displacement from the image-center point in pattern space
