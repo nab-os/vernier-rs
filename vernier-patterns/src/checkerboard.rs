@@ -12,6 +12,13 @@
 //! `Diamonds` (squares turned 45°, code along their diagonals, so the code grid
 //! stays upright).
 //!
+//! Corners can be rounded (see
+//! [`with_corner_radius`](Checkerboard::with_corner_radius)) to suit a
+//! fabrication process that will not hold a sharp corner anyway. Rounding
+//! happens in the squares' own frame, so it follows the lattice through both
+//! layouts and any pose, and it feeds the same supersampled renderer, so the
+//! arcs come out antialiased.
+//!
 //! The code period `3·(2ⁿ − 1)` is odd, so the pattern really repeats after two
 //! periods. We only claim one.
 
@@ -20,7 +27,7 @@ use vernier_core::{GrayImage, Real};
 
 use crate::PatternPose;
 use crate::lfsr::Lfsr;
-use crate::render::{into_pattern_frame, render_with};
+use crate::render::{MAX_CORNER_RADIUS, into_pattern_frame, render_with, rounded_cell};
 
 /// Squares per supercell edge.
 pub const CELL: i64 = 3;
@@ -90,6 +97,8 @@ pub struct Checkerboard {
     /// Sub-samples per pixel edge; hard edges alias without it.
     supersample: u32,
     layout: CodeLayout,
+    /// Corner radius as a fraction of a square side, `0.0` for square corners.
+    corner_radius: Real,
 }
 
 impl Checkerboard {
@@ -103,6 +112,7 @@ impl Checkerboard {
             lfsr_offset: 0,
             supersample: 4,
             layout: CodeLayout::Squares,
+            corner_radius: 0.0,
         })
     }
 
@@ -123,6 +133,37 @@ impl Checkerboard {
     pub fn with_supersample(mut self, supersample: u32) -> Self {
         self.supersample = supersample.max(1);
         self
+    }
+
+    /// Rounds the square corners, `radius` being a fraction of a square side
+    /// from `0.0` (square, the default) to `0.5` (as round as a square gets).
+    /// Values outside that range are clamped.
+    ///
+    /// Squares of the same colour sharing an edge — which is how the code is
+    /// written — merge into one shape rather than each rounding off, so the
+    /// coding sites stay as legible as they are with square corners. Rounding is
+    /// symmetric about each square centre, so it damps the carrier without
+    /// shifting its phase; it does cost fill balance, since only the corners of
+    /// white squares are carved away. See [`white_fraction`](Self::white_fraction).
+    pub fn with_corner_radius(mut self, radius: Real) -> Self {
+        self.corner_radius = radius.clamp(0.0, MAX_CORNER_RADIUS);
+        self
+    }
+
+    pub fn corner_radius(&self) -> Real {
+        self.corner_radius
+    }
+
+    /// The fraction of the *uncoded* carrier that is white, given the corner
+    /// radius. A square checkerboard is 50/50; every white square there is
+    /// isolated, so rounding carves `r²(4 − π)` off each without giving any
+    /// back, and the white fraction drops by up to `(4 − π)/8 ≈ 0.107` at the
+    /// full radius. The coded pattern lands slightly above this: its inverted
+    /// sites put same-colour squares edge to edge, and a merged pair keeps the
+    /// two corners on its seam and gains a filled concave corner elsewhere.
+    pub fn white_fraction(&self) -> Real {
+        let r = self.corner_radius;
+        0.5 - r * r * (4.0 - PI) * 0.5
     }
 
     pub fn code(&self) -> &Lfsr {
@@ -217,26 +258,29 @@ impl Checkerboard {
         Self::parity_is_white(i, j) != self.square_inverted(i, j)
     }
 
-    pub fn square_at(&self, x: Real, y: Real) -> (i64, i64) {
+    /// Continuous square-lattice coordinates, in units of one square side, so
+    /// the square containing a point is the pair of floors. Corner rounding
+    /// needs where the point sits *inside* its square, not just which one.
+    fn lattice_units(&self, x: Real, y: Real) -> (Real, Real) {
         let (x, y) = self.layout.to_lattice(x, y);
-        (
-            (x / self.square_px).floor() as i64,
-            (y / self.square_px).floor() as i64,
-        )
+        (x / self.square_px, y / self.square_px)
+    }
+
+    pub fn square_at(&self, x: Real, y: Real) -> (i64, i64) {
+        let (u, v) = self.lattice_units(x, y);
+        (u.floor() as i64, v.floor() as i64)
     }
 
     pub fn intensity_at(&self, x: Real, y: Real) -> Real {
-        let (i, j) = self.square_at(x, y);
-        if self.square_is_white(i, j) { 1.0 } else { 0.0 }
+        let (u, v) = self.lattice_units(x, y);
+        let white = rounded_cell(u, v, self.corner_radius, |i, j| self.square_is_white(i, j));
+        if white { 1.0 } else { 0.0 }
     }
 
     pub fn plain_intensity_at(&self, x: Real, y: Real) -> Real {
-        let (i, j) = self.square_at(x, y);
-        if Self::parity_is_white(i, j) {
-            1.0
-        } else {
-            0.0
-        }
+        let (u, v) = self.lattice_units(x, y);
+        let white = rounded_cell(u, v, self.corner_radius, Self::parity_is_white);
+        if white { 1.0 } else { 0.0 }
     }
 
     /// `π(i+j)` at a square centre.
@@ -339,6 +383,78 @@ mod tests {
             let img = c.render(512, 512, &PatternPose::new(13.7, -4.1, 0.37));
             let mean = img.as_slice().iter().map(|&v| v as Real).sum::<Real>() / img.as_slice().len() as Real;
             assert!((mean - 0.5).abs() < 0.02, "{layout:?}: {mean}");
+        }
+    }
+
+    #[test]
+    fn square_corners_are_the_default() {
+        let c = Checkerboard::new(9.0, 8).unwrap();
+        assert_eq!(c.corner_radius(), 0.0);
+    }
+
+    #[test]
+    fn rounding_is_clamped_to_a_half() {
+        assert_eq!(Checkerboard::new(9.0, 8).unwrap().with_corner_radius(2.0).corner_radius(), 0.5);
+        assert_eq!(Checkerboard::new(9.0, 8).unwrap().with_corner_radius(-1.0).corner_radius(), 0.0);
+    }
+
+    /// The rounding must not disturb what the detector reads: the code is
+    /// written by inverting whole squares, and that is untouched by the radius.
+    #[test]
+    fn rounding_leaves_the_code_alone() {
+        let plain = Checkerboard::new(8.0, 8).unwrap();
+        let round = plain.clone().with_corner_radius(0.5);
+        for i in -20..20i64 {
+            for j in -20..20i64 {
+                assert_eq!(plain.square_is_white(i, j), round.square_is_white(i, j));
+            }
+        }
+    }
+
+    /// Rounding carves each white square symmetrically about its centre, so the
+    /// carrier loses amplitude but keeps its phase — the same property that lets
+    /// the code be written without shifting the carrier.
+    #[test]
+    fn rounding_does_not_shift_the_carrier_phase() {
+        for layout in [CodeLayout::Squares, CodeLayout::Diamonds] {
+            let c = Checkerboard::new(8.0, 8)
+                .unwrap()
+                .with_code_layout(layout)
+                .with_corner_radius(0.4);
+            // Sample one square finely and check its white mass is centred.
+            let (n, side) = (64, c.square_px);
+            let (mut mass, mut moment_x, mut moment_y) = (0.0, 0.0, 0.0);
+            for a in 0..n {
+                for b in 0..n {
+                    let (dx, dy) = ((a as Real + 0.5) / n as Real, (b as Real + 0.5) / n as Real);
+                    let (x, y) = c.layout.from_lattice(dx * side, dy * side);
+                    if c.intensity_at(x, y) > 0.5 {
+                        mass += 1.0;
+                        moment_x += dx - 0.5;
+                        moment_y += dy - 0.5;
+                    }
+                }
+            }
+            assert!(mass > 0.0, "{layout:?}: sampled square is empty");
+            assert!(moment_x.abs() / mass < 1e-2, "{layout:?}: {moment_x}");
+            assert!(moment_y.abs() / mass < 1e-2, "{layout:?}: {moment_y}");
+        }
+    }
+
+    /// Rounding costs fill balance: the measured white fraction of the uncoded
+    /// carrier should track the closed form in [`Checkerboard::white_fraction`].
+    #[test]
+    fn rounding_thins_the_uncoded_carrier_as_predicted() {
+        for &radius in &[0.0, 0.25, 0.5] {
+            let c = Checkerboard::new(9.0, 8).unwrap().with_corner_radius(radius);
+            let img = c.render_plain(512, 512, &PatternPose::new(13.7, -4.1, 0.37));
+            let mean = img.as_slice().iter().map(|&v| v as Real).sum::<Real>()
+                / img.as_slice().len() as Real;
+            assert!(
+                (mean - c.white_fraction()).abs() < 0.02,
+                "radius {radius}: measured {mean}, predicted {}",
+                c.white_fraction(),
+            );
         }
     }
 
