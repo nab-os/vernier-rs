@@ -178,7 +178,7 @@ See `vernier-matlab/examples/detect.m` for a full example.
 | `vernier-patterns` | Pattern rendering (periodic, megarena) |
 | `vernier-pose` | Pose estimation and LFSR absolute decode |
 | `vernier-cli` | Command-line tool |
-| `vernier-webapp` | Dioxus/WebAssembly pattern generator UI (own workspace) |
+| `vernier-webapp` | Dioxus/WebAssembly pattern generator and spectrum explorer (own workspace) |
 | `vernier-cabi` | C ABI shared/static library |
 | `vernier-py` | Python bindings (PyO3/maturin) |
 | `vernier-dotnet` | .NET bindings (P/Invoke) |
