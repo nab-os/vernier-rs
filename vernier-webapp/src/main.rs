@@ -22,6 +22,7 @@ use controls::{NumberField, Section, Toggle};
 use explorer::{Explorer, ExplorerSettings};
 use pattern::{PatternKind, PatternSettings, MAX_SIDE, MIN_SIDE, ORDER_RANGE};
 use vernier_patterns::checkerboard::CodeLayout;
+use vernier_patterns::render::MAX_CORNER_RADIUS;
 
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 
@@ -423,6 +424,30 @@ pub(crate) fn pattern_fields(mut settings: Signal<PatternSettings>, current: &Pa
                        colour, so you can see exactly which squares the code inverts."
                     .to_string(),
                 on_change: move |value: bool| settings.write().plain_checkerboard = value,
+            }
+            Toggle {
+                label: "Rounded corners".to_string(),
+                checked: current.rounded_corners,
+                hint: "Rounds the square corners, for a process that will not hold a sharp one. \
+                       Same-colour squares sharing an edge merge instead of each rounding off, so \
+                       the coding sites stay legible."
+                    .to_string(),
+                on_change: move |value: bool| settings.write().rounded_corners = value,
+            }
+            if current.rounded_corners {
+                NumberField {
+                    label: "Corner radius".to_string(),
+                    value: current.corner_radius,
+                    min: 0.0,
+                    max: MAX_CORNER_RADIUS,
+                    step: 0.01,
+                    unit: "× square".to_string(),
+                    hint: "A fraction of a square side. Only white squares are carved — at a \
+                           vertex two of the four squares are white — so the fill drifts off \
+                           50/50 as this grows, and at 0.5 the squares are circles."
+                        .to_string(),
+                    on_change: move |value: f64| settings.write().corner_radius = value,
+                }
             }
         },
         PatternKind::Stamp => rsx! {

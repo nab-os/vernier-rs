@@ -158,6 +158,15 @@ pub struct PatternSettings {
     /// Render the checkerboard with every coding site left at its parity colour
     /// — the uncoded reference, for seeing what the code costs.
     pub plain_checkerboard: bool,
+    /// Whether the checkerboard's corners are rounded. Off is upstream's
+    /// default, and renders square corners.
+    pub rounded_corners: bool,
+    /// Corner radius as a fraction of a square side, applied only while
+    /// [`rounded_corners`] is on. Held across a toggle off and back on, so
+    /// unticking the box does not throw away the radius that was dialled in.
+    ///
+    /// [`rounded_corners`]: PatternSettings::rounded_corners
+    pub corner_radius: Real,
     /// Which way the coded lattice sits. `Squares` writes the code along the
     /// square edges, leaving the carriers on the diagonals; `Diamonds` turns
     /// the lattice 45°, which puts the carriers on the pattern axes instead and
@@ -193,6 +202,11 @@ impl Default for PatternSettings {
             // Upstream's own default; see the supersample field.
             supersample: 4,
             plain_checkerboard: false,
+            // Off by default, so the app opens on what upstream renders.
+            rounded_corners: false,
+            // Half of upstream's maximum: clearly rounded at a glance without
+            // collapsing the squares to circles the moment the box is ticked.
+            corner_radius: 0.25,
             code_layout: CodeLayout::Squares,
             tile_px: 32,
             modules: 21,
@@ -233,7 +247,8 @@ impl PatternSettings {
                 .map(|pattern| {
                     let pattern = pattern
                         .with_code_layout(self.code_layout)
-                        .with_lfsr_offset(self.lfsr_offset);
+                        .with_lfsr_offset(self.lfsr_offset)
+                        .with_corner_radius(self.effective_corner_radius());
                     let plain = self.plain_checkerboard;
                     Box::new(move |x, y| {
                         if plain {
@@ -266,6 +281,17 @@ impl PatternSettings {
     /// The pose the generators take, with the UI's degrees converted to radians.
     pub fn pose(&self) -> PatternPose {
         PatternPose::new(self.pose_x, self.pose_y, self.theta_deg.to_radians())
+    }
+
+    /// The corner radius to hand the generator: the dialled-in value while the
+    /// toggle is on, and `0.0` — square corners — while it is off. The two
+    /// fields exist so the radius survives the toggle; this is what renders.
+    pub fn effective_corner_radius(&self) -> Real {
+        if self.rounded_corners {
+            self.corner_radius
+        } else {
+            0.0
+        }
     }
 
     /// Distance between successive checkerboard carrier fringes, `a·√2`. The
@@ -303,7 +329,8 @@ impl PatternSettings {
                     let pattern = pattern
                         .with_code_layout(self.code_layout)
                         .with_lfsr_offset(self.lfsr_offset)
-                        .with_supersample(self.supersample);
+                        .with_supersample(self.supersample)
+                        .with_corner_radius(self.effective_corner_radius());
                     if self.plain_checkerboard {
                         pattern.render_plain(w, h, &pose)
                     } else {
@@ -341,14 +368,27 @@ impl PatternSettings {
                 let code_len = (1u64 << self.order) - 1;
                 // CELL (3) squares per code bit, as in the megarena.
                 let range_squares = 3 * code_len;
-                vec![
+                let mut rows = vec![
                     ("Code length".into(), format!("{code_len} bits (2^{} − 1)", self.order)),
                     // The carriers run diagonally, so a fringe is a√2 apart —
                     // this, not the square side, is what a detector is told.
                     ("Carrier period".into(), format!("{:.2} px", self.carrier_period_px())),
                     ("Absolute range".into(), format!("{range_squares} sq ({:.0} px)", range_squares as Real * self.square_px)),
                     ("Squares across width".into(), format!("{:.2}", self.width as Real / self.square_px)),
-                ]
+                ];
+                // Rounding carves only the white squares, so it costs the 50/50
+                // fill the checkerboard is chosen for. Worth reading off rather
+                // than discovering in a detector.
+                if self.rounded_corners {
+                    if let Some(pattern) = Checkerboard::new(self.square_px, self.order) {
+                        let white = pattern.with_corner_radius(self.corner_radius).white_fraction();
+                        rows.push((
+                            "White fraction".into(),
+                            format!("{white:.3} (0.500 with square corners)"),
+                        ));
+                    }
+                }
+                rows
             }
             PatternKind::Stamp => vec![
                 ("Tiles across width".into(), format!("{:.2}", self.width as Real / self.tile_px.max(1) as Real)),
@@ -373,12 +413,19 @@ impl PatternSettings {
                 self.period_px, self.order, self.lfsr_offset
             ),
             PatternKind::Checkerboard => format!(
-                "Checkerboard::new({:.3}, {})\n    .unwrap()\n    .with_code_layout(CodeLayout::{:?})\n    .with_lfsr_offset({})\n    .with_supersample({})",
+                "Checkerboard::new({:.3}, {})\n    .unwrap()\n    .with_code_layout(CodeLayout::{:?})\n    .with_lfsr_offset({})\n    .with_supersample({}){}",
                 self.square_px,
                 self.order,
                 self.code_layout,
                 self.lfsr_offset,
-                self.supersample
+                self.supersample,
+                // Square corners are the default, so the call is only worth
+                // showing when it would actually change the render.
+                if self.rounded_corners {
+                    format!("\n    .with_corner_radius({:.3})", self.corner_radius)
+                } else {
+                    String::new()
+                },
             ),
             PatternKind::Stamp => format!("Stamp::new({})", self.tile_px),
             PatternKind::QrLike => format!("QrLike::new({}, {})", self.modules, self.module_px),
@@ -401,8 +448,13 @@ impl PatternSettings {
             PatternKind::Periodic => format!("periodic_p{:.0}", self.period_px),
             PatternKind::Megarena => format!("megarena_p{:.0}_n{}", self.period_px, self.order),
             PatternKind::Checkerboard => format!(
-                "checkerboard{}_a{:.0}_n{}",
+                "checkerboard{}{}_a{:.0}_n{}",
                 if self.plain_checkerboard { "_plain" } else { "" },
+                if self.rounded_corners {
+                    format!("_r{:.0}", self.corner_radius * 100.0)
+                } else {
+                    String::new()
+                },
                 self.square_px,
                 self.order
             ),
@@ -456,6 +508,57 @@ mod tests {
         let image = GrayImage::from_vec(3, 1, vec![0.0, 1.0, 1.5]).unwrap();
         assert_eq!(to_rgba(&image, false), vec![0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255]);
         assert_eq!(&to_rgba(&image, true)[..8], &[255, 255, 255, 255, 0, 0, 0, 255]);
+    }
+
+    /// The radius is remembered while the toggle is off, but must not reach the
+    /// generator — otherwise unticking the box would not restore square corners.
+    #[test]
+    fn the_toggle_gates_the_radius_without_losing_it() {
+        let off = PatternSettings {
+            kind: PatternKind::Checkerboard,
+            rounded_corners: false,
+            corner_radius: 0.4,
+            ..Default::default()
+        };
+        assert_eq!(off.effective_corner_radius(), 0.0);
+        assert_eq!(off.corner_radius, 0.4, "the dialled-in radius is kept");
+
+        let on = PatternSettings { rounded_corners: true, ..off };
+        assert_eq!(on.effective_corner_radius(), 0.4);
+    }
+
+    #[test]
+    fn the_toggle_changes_the_render() {
+        let square = PatternSettings {
+            kind: PatternKind::Checkerboard,
+            width: 96,
+            height: 96,
+            rounded_corners: false,
+            corner_radius: 0.5,
+            ..Default::default()
+        };
+        let rounded = PatternSettings { rounded_corners: true, ..square.clone() };
+
+        let (a, b) = (square.render().unwrap(), rounded.render().unwrap());
+        assert_ne!(a.as_slice(), b.as_slice(), "rounding should change the image");
+
+        // Ticking the box only ever removes white: corners are carved away.
+        let white = |image: &GrayImage| image.as_slice().iter().map(|&v| v as Real).sum::<Real>();
+        assert!(white(&b) < white(&a), "rounding should not add white");
+    }
+
+    #[test]
+    fn the_snippet_shows_the_radius_only_when_rounded() {
+        let mut settings = PatternSettings {
+            kind: PatternKind::Checkerboard,
+            corner_radius: 0.3,
+            rounded_corners: false,
+            ..Default::default()
+        };
+        assert!(!settings.equivalent_rust().contains("with_corner_radius"));
+
+        settings.rounded_corners = true;
+        assert!(settings.equivalent_rust().contains(".with_corner_radius(0.300)"));
     }
 
     #[test]
