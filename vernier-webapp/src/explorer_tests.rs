@@ -10,6 +10,7 @@ use crate::camera;
 use crate::canvas;
 use crate::explorer::ExplorerSettings;
 use crate::pattern::{PatternKind, PatternSettings};
+use vernier_patterns::checkerboard::CodeLayout;
 use crate::spectral::{self, Stages};
 
 /// A pattern whose carrier is 16 px whichever kind it is, so every case is
@@ -104,6 +105,53 @@ fn the_two_carriers_are_orthogonal() {
             kind.label()
         );
     }
+}
+
+/// The layout toggle turns the coded lattice, and the carriers with it: the
+/// `Squares` layout writes the code along the square edges and leaves the
+/// carriers on the diagonals, while `Diamonds` turns the lattice 45° so the
+/// carriers land on the pattern axes. Same pattern, same period, peaks a
+/// quarter turn apart.
+#[test]
+fn the_code_layout_decides_where_the_carriers_point() {
+    for (layout, offset_deg) in [(CodeLayout::Squares, 45.0), (CodeLayout::Diamonds, 0.0)] {
+        let pattern =
+            PatternSettings { code_layout: layout, ..settings_for(PatternKind::Checkerboard) };
+        let view = view_for(&pattern, 128);
+        let stages = analyse_with(&pattern, &view).expect("carriers are found");
+
+        for peak in stages.peaks {
+            let (_, angle) = polar(peak);
+            // Distance to the nearest multiple of 90° plus the layout's offset,
+            // measured either side so 0° and 90° both count as "on axis".
+            let within = angle.rem_euclid(90.0);
+            let offset = (within - offset_deg).abs().min((90.0 - offset_deg - within).abs());
+            assert!(
+                offset <= 5.0,
+                "{layout:?}: peak at {angle:.2} deg is not {offset_deg} deg off an axis"
+            );
+        }
+    }
+}
+
+/// Turning the lattice changes which way the carrier points, not how fine it
+/// is, so the peak radius has to come out the same for both layouts.
+#[test]
+fn the_code_layout_leaves_the_carrier_period_alone() {
+    let radius_for = |layout| {
+        let pattern =
+            PatternSettings { code_layout: layout, ..settings_for(PatternKind::Checkerboard) };
+        let view = view_for(&pattern, 128);
+        let stages = analyse_with(&pattern, &view).expect("carriers are found");
+        polar(stages.peaks[0]).0
+    };
+
+    let squares = radius_for(CodeLayout::Squares);
+    let diamonds = radius_for(CodeLayout::Diamonds);
+    assert!(
+        (squares - diamonds).abs() <= 1.5,
+        "radius {squares:.2} for squares against {diamonds:.2} for diamonds"
+    );
 }
 
 /// A checkerboard's carriers run along its diagonals — that is what makes its

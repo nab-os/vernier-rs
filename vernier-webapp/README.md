@@ -93,7 +93,15 @@ about the patterns is reimplemented.
 | Image | width, height (16–2048 px), plus 256/512/1024/2048 presets |
 | Periodic | spatial period (px) |
 | Megarena | dot period (px), LFSR order (4–12 bits), LFSR offset |
-| Checkerboard | square side (px), LFSR order (4–12 bits), LFSR offset, supersampling (1–8×/edge), uncoded reference |
+| Checkerboard | code layout (squares or diamonds), square side (px), LFSR order (4–12 bits), LFSR offset, supersampling (1–8×/edge), uncoded reference |
+
+The checkerboard's **code layout** decides which way the coded lattice sits, and
+the explorer shows what that costs. `Squares` writes the code along the square
+edges and leaves the carriers on the diagonals, so the peaks sit at ±45°.
+`Diamonds` turns the lattice 45°, putting the carriers on the pattern axes and
+the peaks at 0° and 90°, for a factor of √2 in absolute range. Measured in the
+page at 128²: 45.00°/135.00° against 0.00°/90.00°, at the same peak radius
+either way — the layout turns the carrier without changing how fine it is.
 | Stamp | tile size (px) |
 | QR-like | modules per axis, module size (px) |
 | Pose | X translation, Y translation, orientation (degrees, shown in radians too) |
