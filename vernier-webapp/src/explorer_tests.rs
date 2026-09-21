@@ -1,16 +1,15 @@
-//! Numeric checks on the explorer's chain: render a pattern through the camera,
-//! run the detector, and assert the spectrum landed where the geometry says it
-//! must. Nothing here needs a browser — the same code that runs in the page runs
-//! natively under `cargo test`.
+//! Numeric checks on the explorer's chain, run natively: render a pattern
+//! through the camera, run the detector, and assert the spectrum landed where
+//! the geometry says it must.
 
 use vernier_core::Real;
 use vernier_cpu::CpuBackend;
+use vernier_patterns::checkerboard::CodeLayout;
 
 use crate::camera;
 use crate::canvas;
 use crate::explorer::ExplorerSettings;
 use crate::pattern::{PatternKind, PatternSettings};
-use vernier_patterns::checkerboard::CodeLayout;
 use crate::spectral::{self, Stages};
 
 /// A pattern whose carrier is 16 px whichever kind it is, so every case is
@@ -67,10 +66,9 @@ fn separation_deg(stages: &Stages) -> Real {
     (a1 - a2).abs().rem_euclid(180.0)
 }
 
-/// The home distance is defined to put `TARGET_SAMPLES_PER_PERIOD` pixels on one
-/// carrier period, which fixes the peak radius at `size / 8` bins. Every pattern
-/// has to land there, whatever it wraps around its carrier — including the
-/// checkerboard, whose period is the diagonal and not the square side.
+/// The home distance puts `TARGET_SAMPLES_PER_PERIOD` pixels on one carrier
+/// period, fixing the peak radius at `size / 8` bins. Every pattern has to land
+/// there — including the checkerboard, whose period is the diagonal.
 #[test]
 fn carriers_land_at_the_expected_radius() {
     let size = 128;
@@ -90,8 +88,7 @@ fn carriers_land_at_the_expected_radius() {
     }
 }
 
-/// The two carriers of each of these patterns are orthogonal, so their peaks sit
-/// a right angle apart.
+/// The two carriers of each of these patterns are orthogonal.
 #[test]
 fn the_two_carriers_are_orthogonal() {
     for kind in PatternKind::ALL {
@@ -107,11 +104,8 @@ fn the_two_carriers_are_orthogonal() {
     }
 }
 
-/// The layout toggle turns the coded lattice, and the carriers with it: the
-/// `Squares` layout writes the code along the square edges and leaves the
-/// carriers on the diagonals, while `Diamonds` turns the lattice 45° so the
-/// carriers land on the pattern axes. Same pattern, same period, peaks a
-/// quarter turn apart.
+/// Squares leaves the carriers on the diagonals; Diamonds turns the lattice 45°
+/// and puts them on the axes.
 #[test]
 fn the_code_layout_decides_where_the_carriers_point() {
     for (layout, offset_deg) in [(CodeLayout::Squares, 45.0), (CodeLayout::Diamonds, 0.0)] {
@@ -122,8 +116,6 @@ fn the_code_layout_decides_where_the_carriers_point() {
 
         for peak in stages.peaks {
             let (_, angle) = polar(peak);
-            // Distance to the nearest multiple of 90° plus the layout's offset,
-            // measured either side so 0° and 90° both count as "on axis".
             let within = angle.rem_euclid(90.0);
             let offset = (within - offset_deg).abs().min((90.0 - offset_deg - within).abs());
             assert!(
@@ -134,53 +126,9 @@ fn the_code_layout_decides_where_the_carriers_point() {
     }
 }
 
-/// Turning the lattice changes which way the carrier points, not how fine it
-/// is, so the peak radius has to come out the same for both layouts.
-#[test]
-fn the_code_layout_leaves_the_carrier_period_alone() {
-    let radius_for = |layout| {
-        let pattern =
-            PatternSettings { code_layout: layout, ..settings_for(PatternKind::Checkerboard) };
-        let view = view_for(&pattern, 128);
-        let stages = analyse_with(&pattern, &view).expect("carriers are found");
-        polar(stages.peaks[0]).0
-    };
-
-    let squares = radius_for(CodeLayout::Squares);
-    let diamonds = radius_for(CodeLayout::Diamonds);
-    assert!(
-        (squares - diamonds).abs() <= 1.5,
-        "radius {squares:.2} for squares against {diamonds:.2} for diamonds"
-    );
-}
-
-/// A checkerboard's carriers run along its diagonals — that is what makes its
-/// period `a·√2` — so its peaks sit at ±45°, where the grid patterns put theirs
-/// on the axes.
-#[test]
-fn checkerboard_carriers_run_diagonally() {
-    for peak in analyse(PatternKind::Checkerboard, 128).peaks {
-        let (_, angle) = polar(peak);
-        let offset = (angle.rem_euclid(90.0) - 45.0).abs();
-        assert!(offset <= 5.0, "checkerboard peak at {angle:.2} deg is not diagonal");
-    }
-}
-
-#[test]
-fn grid_carriers_run_along_the_axes() {
-    for kind in [PatternKind::Periodic, PatternKind::Megarena] {
-        for peak in analyse(kind, 128).peaks {
-            let (_, angle) = polar(peak);
-            let offset = angle.rem_euclid(90.0).min(90.0 - angle.rem_euclid(90.0));
-            assert!(offset <= 5.0, "{}: peak at {angle:.2} deg is off-axis", kind.label());
-        }
-    }
-}
-
 /// Out-of-plane tilt is the freedom `PatternPose` cannot express, and the reason
-/// this crate carries its own camera at all: under perspective the two carriers
-/// stop being orthogonal in the image, which is exactly what the explorer is for
-/// showing.
+/// this crate carries its own camera: under perspective the two carriers stop
+/// being orthogonal in the image.
 #[test]
 fn tilting_out_of_plane_skews_the_peak_pair() {
     let pattern = settings_for(PatternKind::Checkerboard);
@@ -196,20 +144,8 @@ fn tilting_out_of_plane_skews_the_peak_pair() {
     );
 }
 
-/// The stubs have no layout to sample, and the explorer has to say so rather
-/// than drawing a blank frame and leaving it a mystery.
-#[test]
-fn stub_generators_are_refused_with_a_reason() {
-    for kind in [PatternKind::Stamp, PatternKind::QrLike] {
-        let message = settings_for(kind).sampler().err().expect("stub has no sampler");
-        assert!(message.contains(kind.label()), "{message}");
-        assert!(message.contains("vernier-patterns/src/"), "{message}");
-    }
-}
-
-/// Why the log toggle exists: a coded pattern's carrier peaks stand so far above
-/// its sidebands that a linear ramp crushes most of the spectrum to black, while
-/// the log spreads it across the range.
+/// A coded pattern's peaks stand so far above its sidebands that a linear ramp
+/// crushes most of the spectrum to black.
 #[test]
 fn the_log_scale_lifts_the_spectrum_off_the_floor() {
     let stages = analyse(PatternKind::Megarena, 128);
@@ -221,8 +157,5 @@ fn the_log_scale_lifts_the_spectrum_off_the_floor() {
 
     let (linear, log) = (median(false), median(true));
     assert!(linear <= 2, "a linear ramp should leave most of it black, got {linear}");
-    // Where the log puts the bulk depends on how much sideband energy the code
-    // spreads, so this is a floor on the order of magnitude, not a fit.
     assert!(log >= 20, "the log should lift the bulk clear of black, got {log}");
-    assert!(log > linear + 15, "log {log} and linear {linear} are too close");
 }

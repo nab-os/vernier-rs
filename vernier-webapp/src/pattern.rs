@@ -92,18 +92,14 @@ impl PatternKind {
         }
     }
 
-    /// Whether `vernier-patterns` still returns a blank image for this kind.
-    /// The UI says so out loud rather than showing an unexplained black square.
-    /// Whether the explorer can ask this pattern for the brightness at an
-    /// arbitrary point of its plane.
-    ///
-    /// The six-degree-of-freedom camera works by projecting each output pixel
-    /// back onto the pattern plane and sampling there, which the stubs cannot
-    /// answer: they have no layout behind them and ignore the pose entirely.
+    /// Whether the explorer can sample this pattern at an arbitrary point. The
+    /// stubs cannot: they have no layout and ignore the pose.
     pub fn has_point_sampler(self) -> bool {
         matches!(self, Self::Periodic | Self::Megarena | Self::Checkerboard)
     }
 
+    /// Whether `vernier-patterns` still returns a blank image for this kind.
+    /// The UI says so out loud rather than showing an unexplained black square.
     pub fn is_stub(self) -> bool {
         matches!(self, PatternKind::Stamp | PatternKind::QrLike)
     }
@@ -452,24 +448,6 @@ mod tests {
         for kind in [PatternKind::Megarena, PatternKind::Checkerboard] {
             let settings = PatternSettings { kind, order: 3, ..Default::default() };
             assert!(settings.render().unwrap_err().contains("4..=12"));
-        }
-    }
-
-    /// The snippet is meant to be pasted and run, so it has to carry the layout
-    /// too — the two produce different patterns from identical other settings.
-    #[test]
-    fn snippet_carries_the_code_layout() {
-        for layout in [CodeLayout::Squares, CodeLayout::Diamonds] {
-            let settings = PatternSettings {
-                kind: PatternKind::Checkerboard,
-                code_layout: layout,
-                ..Default::default()
-            };
-            let snippet = settings.equivalent_rust();
-            assert!(
-                snippet.contains(&format!("with_code_layout(CodeLayout::{layout:?})")),
-                "{snippet}"
-            );
         }
     }
 

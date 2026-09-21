@@ -92,7 +92,7 @@ fn App() -> Element {
                     View::Explorer => rsx! {
                         "The detector runs in this page: "
                         code { "vernier-spectral" }
-                        " compiled to WebAssembly, transforming each frame as you move the camera."
+                        " compiled to WebAssembly."
                     },
                 }
             }
@@ -470,19 +470,12 @@ fn layout_label(layout: CodeLayout) -> &'static str {
     }
 }
 
-/// What choosing one costs and buys. The two differ in where the code sits
-/// relative to the carrier, which is why the explorer finds the peaks somewhere
-/// different for each.
+/// What choosing one costs and buys.
 fn layout_hint(layout: CodeLayout) -> &'static str {
     match layout {
-        CodeLayout::Squares => {
-            "Upright squares, code written along their edges. The carriers run along \
-             the diagonals, so the peaks sit at ±45°."
-        }
+        CodeLayout::Squares => "Code along the square edges; carriers on the diagonals.",
         CodeLayout::Diamonds => {
-            "Squares turned 45°, code along their diagonals — which puts the carriers \
-             on the pattern axes and the peaks at 0° and 90°. Costs a factor of √2 in \
-             absolute range, and each code band is one colour."
+            "Lattice turned 45°: carriers on the pattern axes, for √2 of range."
         }
     }
 }
