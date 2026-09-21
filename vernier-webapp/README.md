@@ -46,8 +46,7 @@ left alone here.
 
 ## The two views
 
-The header switches between them, and they share the pattern selection: pick a
-pattern in one and it is the pattern in the other.
+The header switches between them, and they share the pattern selection.
 
 **Generator** renders a pattern and hands it back as a PNG.
 
@@ -57,33 +56,20 @@ every stage the detector passes through as you move it:
     camera image -> FFT -> peak selection -> band-pass -> reconstruction -> phases
 
 Drag the camera image: left to translate, right to rotate about Z and change
-distance, middle to tilt out of plane, the wheel for distance, shift for
-ten-times-finer motion. The point is to watch the spectrum answer. Translation
-leaves the peaks where they are and only turns the phase; rotation swings them
-around the origin; distance moves them radially; the out-of-plane angles pull
-the pair off its right angle until the search band or the Gaussian window stops
-tracking them.
-
-The detector is the library itself — `vernier-spectral` and `vernier-cpu`
-compiled to WebAssembly — running in the page. There is no server.
+distance, middle to tilt out of plane, the wheel for distance, shift for finer
+motion. The detector is the library itself — `vernier-spectral` and
+`vernier-cpu` compiled to WebAssembly — running in the page, with no server.
 
 Two things worth knowing:
 
-- The explorer needs to sample a pattern at an arbitrary point of its plane,
-  which the **Stamp** and **QR-like** stubs cannot do: they have no layout and
-  ignore the pose. The explorer says so and leaves the stages blank. The other
-  three work.
-- **Log scale on the FFT panels** is on by default. A coded pattern's carrier
+- **Stamp** and **QR-like** are stubs with no layout to sample at a pose, so the
+  explorer refuses them. The other three work.
+- **Log scale on the FFT panels** is on by default: a coded pattern's carrier
   peaks stand orders of magnitude above its sidebands, so a linear ramp shows
-  two white dots on black and nothing else; measured in the browser, the mean
-  grey of the FFT panel is 40/255 with the log on and 0.1/255 with it off.
-  Linear is the honest view of the magnitudes, and the one that shows how
-  completely the peaks dominate.
+  two white dots on black. Linear is the honest view of the magnitudes.
 
-Out-of-plane tilt is the freedom `PatternPose` cannot express — it carries x, y
-and θ only — so the explorer keeps its own six-freedom pose and does the
-projection in `camera.rs`, sampling the library's patterns through it. Nothing
-about the patterns is reimplemented.
+Out-of-plane tilt is the freedom `PatternPose` cannot express, so the explorer
+keeps its own six-freedom pose and does the projection in `camera.rs`.
 
 ## What you can set
 
@@ -94,14 +80,6 @@ about the patterns is reimplemented.
 | Periodic | spatial period (px) |
 | Megarena | dot period (px), LFSR order (4–12 bits), LFSR offset |
 | Checkerboard | code layout (squares or diamonds), square side (px), LFSR order (4–12 bits), LFSR offset, supersampling (1–8×/edge), uncoded reference |
-
-The checkerboard's **code layout** decides which way the coded lattice sits, and
-the explorer shows what that costs. `Squares` writes the code along the square
-edges and leaves the carriers on the diagonals, so the peaks sit at ±45°.
-`Diamonds` turns the lattice 45°, putting the carriers on the pattern axes and
-the peaks at 0° and 90°, for a factor of √2 in absolute range. Measured in the
-page at 128²: 45.00°/135.00° against 0.00°/90.00°, at the same peak radius
-either way — the layout turns the carrier without changing how fine it is.
 | Stamp | tile size (px) |
 | QR-like | modules per axis, module size (px) |
 | Pose | X translation, Y translation, orientation (degrees, shown in radians too) |
@@ -118,7 +96,14 @@ Alongside the preview, the readouts show what the parameters work out to — for
 Megarena, the code length (`2^order − 1`) and the absolute range in pixels
 (`code_length × 3 × period`, three periods per bit).
 
-## Two parameters the checkerboard needs care with
+## Three parameters the checkerboard needs care with
+
+**Code layout** decides which way the coded lattice sits. `Squares` writes the
+code along the square edges, leaving the carriers on the diagonals (peaks at
+±45°); `Diamonds` turns the lattice 45°, putting the carriers on the pattern
+axes (peaks at 0° and 90°) for a factor of √2 in absolute range. Same carrier
+period either way.
+
 
 **Square side is not the carrier period.** The checkerboard's two carriers run
 along the diagonals, at ±45° to the square edges, so successive fringes are
@@ -167,7 +152,10 @@ rasterizers, this app picks them up with no change here.
 | `src/pattern.rs` | the parameter model and its mapping onto `vernier-patterns` calls |
 | `src/canvas.rs` | canvas painting and PNG download |
 | `src/controls.rs` | the slider/number, toggle and section widgets |
-| `src/main.rs` | the app shell and the per-generator field lists |
+| `src/main.rs` | the app shell, the view switch, and the per-generator field lists |
+| `src/camera.rs` | the explorer's six-freedom pose and its projection |
+| `src/spectral.rs` | one pass of the detector, keeping every stage |
+| `src/explorer.rs` | the explorer view |
 
 Adding a parameter means a field on `PatternSettings`, an arm in
 `PatternSettings::render`, and a `NumberField` in `pattern_fields` — nothing
