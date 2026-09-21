@@ -161,6 +161,20 @@ Adding a parameter means a field on `PatternSettings`, an arm in
 `PatternSettings::render`, and a `NumberField` in `pattern_fields` — nothing
 else is wired per-parameter.
 
+## Deploying it
+
+There is no server side, so the bundle is a static directory that any host can
+serve. `.github/workflows/pages.yml` builds it and publishes it to GitHub Pages
+on every push to `main` that touches this crate or the library crates it calls.
+
+A Pages project site lives under `/<repo>/`, not at the root, so CI passes
+`dx bundle --base-path vernier-rs`; without it the page loads and then 404s on
+its own JavaScript. The prefix is a flag rather than a `Dioxus.toml` entry so
+that `dx serve` keeps serving from `/` locally.
+
+The workflow needs Pages enabled for the repository with **GitHub Actions** as
+the source; until then it builds and the deploy step fails.
+
 ## Why it is its own workspace
 
 `vernier-webapp/Cargo.toml` carries an empty `[workspace]` table, so it is not a

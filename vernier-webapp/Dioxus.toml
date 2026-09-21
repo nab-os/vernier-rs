@@ -1,0 +1,9 @@
+[application]
+name = "vernier-webapp"
+
+[web.app]
+# Without this the generated index.html carries Dioxus's placeholder title, and
+# the browser shows it until the app mounts and `document::Title` replaces it.
+# The deployment's base path is *not* set here on purpose: it is a GitHub Pages
+# detail, passed as `dx bundle --base-path`, so `dx serve` keeps serving from /.
+title = "Vernier patterns"
