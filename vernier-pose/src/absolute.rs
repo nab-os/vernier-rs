@@ -99,6 +99,7 @@ pub struct CodingOrientation {
 }
 
 /// Decoded bit windows plus the derived quadrant, ready to build a [`MegarenaDecoder`].
+#[derive(Clone, Debug)]
 pub struct ExtractedCode {
     /// Decoded bit window along direction 1 (length = order), in LFSR-natural
     /// order (reversed relative to the image scan direction when msb1=false).
@@ -445,6 +446,161 @@ fn decode_axis_bits(
 }
 
 // ─── Public extraction API ───────────────────────────────────────────────────
+
+/// What one carrier cell is for, once the coding orientation is known.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CellRole {
+    /// An always-present dot: the carrier, and the white reference the coding
+    /// cells are judged against.
+    Carrier,
+    /// Gated by the direction-1 code.
+    CodingX,
+    /// Gated by the direction-2 code.
+    CodingY,
+    /// At both coding residues, so gated by both and read as neither.
+    CodingBoth,
+    /// The corner dropped from every 3×3 cell to break the π/2 ambiguity.
+    MissingCorner,
+}
+
+/// One carrier cell as the decoder saw it, for anything that wants to show the
+/// extraction rather than just its answer.
+#[derive(Clone, Copy, Debug)]
+pub struct CellReadout {
+    /// Cell index along each direction, in carrier periods from the phase
+    /// origin — the frame [`decode_axis_bits`] counts triples in.
+    pub x: i64,
+    pub y: i64,
+    /// Mean intensity over the dot site: bright where the dot is present, dark
+    /// where the code gated it away. `None` when no pixel landed on it.
+    pub white: Option<Real>,
+    /// Mean intensity of the surround — the dark reference a bit is judged
+    /// against.
+    pub background: Option<Real>,
+    pub role: CellRole,
+    /// The bit this cell carries, for the roles that carry one.
+    pub bit: Option<u8>,
+}
+
+/// The cell-level stages of the megarena decode, kept instead of discarded.
+///
+/// Everything here is produced exactly as [`extract_code`] produces it, so a
+/// caller can show the dots, the coding cells and the bits read off them beside
+/// the code they decoded to.
+#[derive(Clone, Debug)]
+pub struct MegarenaReadout {
+    /// Every cell either pool saw.
+    pub cells: Vec<CellReadout>,
+    /// Inclusive bounds of the sampled lattice, as `(min, max)`.
+    pub x_range: (i64, i64),
+    pub y_range: (i64, i64),
+    /// Which residues carry the code, and where the corner is dropped.
+    pub orientation: CodingOrientation,
+    /// Cell coordinates of the image centre, sub-cell part kept.
+    pub centre: (Real, Real),
+    /// What the full decode made of the same cells.
+    pub code: Option<ExtractedCode>,
+}
+
+/// Pools the carrier cells, finds the coding orientation and reads the bits off
+/// them, without throwing any of it away.
+///
+/// `None` when the 3×3 global cell is not fully observed — the same condition
+/// that stops [`extract_code`], and what a frame too small or too oblique to
+/// show one complete cell looks like.
+pub fn read_cells(
+    detection: &Detection,
+    intensity: &[f32],
+    order: u32,
+) -> Option<MegarenaReadout> {
+    let (width, height) = (detection.width, detection.height);
+    let pools =
+        accumulate_cell_pools(&detection.phase1, &detection.phase2, intensity, width, height);
+    let (off1, off2) = cpp_frame_offsets(detection);
+    let orientation = detect_coding_orientation(&pools, off1, off2)?;
+
+    let x_bits = decode_axis_bits(
+        &pools,
+        true,
+        orientation.coding1,
+        orientation.coding2,
+        orientation.missing1,
+        orientation.missing2,
+    );
+    let y_bits = decode_axis_bits(
+        &pools,
+        false,
+        orientation.coding2,
+        orientation.coding1,
+        orientation.missing2,
+        orientation.missing1,
+    );
+
+    // Every cell either pool saw. A gated dot can be dark enough that only the
+    // background pool has it, and it still has to appear in the thumbnail.
+    let mut keys: Vec<(i64, i64)> = pools
+        .white
+        .keys()
+        .chain(pools.background.keys())
+        .copied()
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    if keys.is_empty() {
+        return None;
+    }
+
+    let cells: Vec<CellReadout> = keys
+        .into_iter()
+        .map(|(x, y)| {
+            let on_x = x.rem_euclid(3) == orientation.coding1;
+            let on_y = y.rem_euclid(3) == orientation.coding2;
+            let corner = x.rem_euclid(3) == orientation.missing1
+                && y.rem_euclid(3) == orientation.missing2;
+            let role = match (corner, on_x, on_y) {
+                (true, _, _) => CellRole::MissingCorner,
+                (_, true, true) => CellRole::CodingBoth,
+                (_, true, false) => CellRole::CodingX,
+                (_, false, true) => CellRole::CodingY,
+                (_, false, false) => CellRole::Carrier,
+            };
+            let bit = match role {
+                CellRole::CodingX => x_bits.get(&x.div_euclid(3)).copied(),
+                CellRole::CodingY => y_bits.get(&y.div_euclid(3)).copied(),
+                _ => None,
+            };
+            CellReadout {
+                x,
+                y,
+                white: pools.white_mean((x, y)),
+                background: pools.background_mean((x, y)),
+                role,
+                bit,
+            }
+        })
+        .collect();
+
+    let (x_min, x_max) = cells
+        .iter()
+        .fold((i64::MAX, i64::MIN), |(lo, hi), c| (lo.min(c.x), hi.max(c.x)));
+    let (y_min, y_max) = cells
+        .iter()
+        .fold((i64::MAX, i64::MIN), |(lo, hi), c| (lo.min(c.y), hi.max(c.y)));
+
+    let centre_pixel = (height / 2) * width + width / 2;
+
+    Some(MegarenaReadout {
+        cells,
+        x_range: (x_min, x_max),
+        y_range: (y_min, y_max),
+        orientation,
+        centre: (
+            detection.phase1[centre_pixel] / TAU,
+            detection.phase2[centre_pixel] / TAU,
+        ),
+        code: extract_code(detection, intensity, order),
+    })
+}
 
 /// Decodes the full per-triple bit maps for both directions (diagnostic API).
 /// Returns `(x_bits, y_bits)`, each mapping triple index → bit for every

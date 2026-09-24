@@ -53,7 +53,7 @@ The header switches between them, and they share the pattern selection.
 **Spectrum explorer** puts a virtual camera in front of that pattern and shows
 every stage the detector passes through as you move it:
 
-    camera image -> FFT and peak selection -> band-pass -> reconstruction
+    camera image -> FFT and peak selection -> reconstruction
       -> wrapped phases -> extracted thumbnail
 
 Drag the camera image: left to translate, right to rotate about Z and change
@@ -66,14 +66,17 @@ Three things worth knowing:
 
 - **Stamp** and **QR-like** are stubs with no layout to sample at a pose, so the
   explorer refuses them. The other three work.
-- The **extracted thumbnail** is the coded checkerboard's square model, so that
-  panel only fills for the checkerboard. Every square the decoder sampled
-  becomes one thumbnail pixel — which is what dewarps it, so a tilted camera
-  still gives a square-on grid — and the squares whose colour breaks the
-  checkerboard parity are ringed: those are the coding sites, and the readouts
-  say what they decoded to. A frame too small to hold `order` bits says so
+- The **extracted thumbnail** only fills for the two coded patterns, since the
+  others have no code to read. Every lattice node the decoder sampled becomes
+  one thumbnail pixel — which is what dewarps it, so a tilted camera still
+  gives a square-on grid — and the nodes the code wrote to are marked, with a
+  legend under the panel. The checkerboard writes a 0 by inverting a square, so
+  its marks are the squares that break the parity; the megarena writes one by
+  removing a whole row or column of dots, so its marks come in stripes, and the
+  dropped corner that fixes the orientation is marked too. The readouts say what
+  the marks decoded to, and a frame too small to hold `order` bits says so
   instead of guessing.
-- **Log scale on the FFT panels** is on by default: a coded pattern's carrier
+- **Log scale on the FFT panel** is on by default: a coded pattern's carrier
   peaks stand orders of magnitude above its sidebands, so a linear ramp shows
   two white dots on black. Linear is the honest view of the magnitudes.
 
@@ -164,7 +167,7 @@ rasterizers, this app picks them up with no change here.
 | `src/main.rs` | the app shell, the view switch, and the per-generator field lists |
 | `src/camera.rs` | the explorer's six-freedom pose and its projection |
 | `src/spectral.rs` | one pass of the detector, keeping every stage |
-| `src/coding.rs` | the decoder's squares, arranged into a drawable thumbnail |
+| `src/coding.rs` | the decoders' lattices, arranged into a drawable thumbnail |
 | `src/explorer.rs` | the explorer view |
 
 Adding a parameter means a field on `PatternSettings`, an arm in

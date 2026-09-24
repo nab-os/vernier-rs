@@ -161,57 +161,121 @@ fn the_log_scale_lifts_the_spectrum_off_the_floor() {
 }
 
 /// The thumbnail panel has to stay pinned to the chain that feeds it: the
-/// squares come out of the same detection the phases do, so the lattice it
-/// draws must be the one the carrier period implies, and the sites it rings
-/// must be the ones the decoder called sites.
+/// lattice comes out of the same detection the phases do, so the grid it draws
+/// must be the one the carrier period implies, and every mark it puts down must
+/// land on a node the decoder actually sampled.
+///
+/// Both coded patterns go through it, by different decoders — the checkerboard
+/// counts squares, the megarena counts carrier cells — so both are checked.
 #[test]
 fn the_thumbnail_lattice_matches_the_carrier() {
     let size = 256;
-    let pattern = settings_for(PatternKind::Checkerboard);
+    for kind in [PatternKind::Checkerboard, PatternKind::Megarena] {
+        let pattern = settings_for(kind);
+        let view = view_for(&pattern, size);
+        let sampler = pattern.sampler().expect("this kind has a point sampler");
+        let image = camera::render(&sampler, &view.pose, view.size, view.supersample);
+        let stages = analyse_with(&pattern, &view).expect("two carrier peaks are found");
+
+        let source = match kind {
+            PatternKind::Checkerboard => crate::coding::Source::Checkerboard {
+                order: pattern.order,
+                layout: pattern.code_layout,
+            },
+            _ => crate::coding::Source::Megarena { order: pattern.order },
+        };
+        let thumbnail =
+            crate::coding::Thumbnail::extract(&stages.detection(size), image.as_slice(), source)
+                .unwrap_or_else(|| panic!("{kind:?}: the frame is full of nodes"));
+
+        // One cell per lattice node: the side has to match the frame divided by
+        // the node spacing as the camera magnifies it, give or take the edges.
+        // The checkerboard's nodes are squares, at the carrier period over √2;
+        // the megarena's are carrier cells, one per period.
+        let node_px = match kind {
+            PatternKind::Checkerboard => {
+                pattern.carrier_period_px() / std::f64::consts::SQRT_2
+            }
+            _ => pattern.explorer_period_px(),
+        } * view.pose.magnification();
+        let expected = size as Real / node_px;
+        assert!(
+            (thumbnail.side as Real - expected).abs() <= 3.0,
+            "{kind:?}: a {} cell thumbnail for a lattice of about {expected:.1} nodes",
+            thumbnail.side
+        );
+
+        assert_eq!(thumbnail.levels.len(), thumbnail.side * thumbnail.side);
+        assert_eq!(thumbnail.present.len(), thumbnail.side * thumbnail.side);
+        assert!(thumbnail.judged <= thumbnail.sampled, "{kind:?}");
+
+        // Every mark lands on a cell that holds a node, and inside the canvas.
+        assert!(!thumbnail.sites.is_empty(), "{kind:?}: a coded pattern has sites");
+        for site in &thumbnail.sites {
+            assert!(site.col < thumbnail.side && site.row < thumbnail.side, "{kind:?}");
+            assert!(
+                thumbnail.present[site.row * thumbnail.side + site.col],
+                "{kind:?}: a site was marked on padding"
+            );
+        }
+
+        // And the centre crosshair stays inside the canvas it is drawn on.
+        let (cx, cy) = thumbnail.centre;
+        assert!((0.0..thumbnail.side as f64).contains(&cx), "{kind:?}");
+        assert!((0.0..thumbnail.side as f64).contains(&cy), "{kind:?}");
+    }
+}
+
+/// The megarena writes a 0 by removing a whole row or column of dots, so the
+/// sites it marks must come in stripes: every cell on a coding column shares
+/// one bit, and that bit decides whether its dot is there. A thumbnail that
+/// merely looked plausible would not have that structure.
+#[test]
+fn the_megarena_sites_are_banded_by_bit() {
+    let size = 256;
+    let pattern = settings_for(PatternKind::Megarena);
     let view = view_for(&pattern, size);
-    let sampler = pattern.sampler().expect("the checkerboard has a point sampler");
+    let sampler = pattern.sampler().expect("the megarena has a point sampler");
     let image = camera::render(&sampler, &view.pose, view.size, view.supersample);
     let stages = analyse_with(&pattern, &view).expect("two carrier peaks are found");
+    let detection = stages.detection(size);
 
-    let thumbnail = crate::coding::Thumbnail::extract(
-        &stages.detection(size),
-        image.as_slice(),
-        pattern.order,
-        pattern.code_layout,
-    )
-    .expect("the frame is full of squares");
+    let readout = vernier_pose::absolute::read_cells(&detection, image.as_slice(), pattern.order)
+        .expect("one full 3x3 cell is in frame");
 
-    // One cell per square: the side has to match the frame divided by the
-    // square as the camera magnifies it, give or take the edges.
-    let square_px = pattern.carrier_period_px() / std::f64::consts::SQRT_2
-        * view.pose.magnification();
-    let expected = size as Real / square_px;
-    assert!(
-        (thumbnail.side as Real - expected).abs() <= 3.0,
-        "a {} cell thumbnail for a lattice of about {expected:.1} squares",
-        thumbnail.side
-    );
-
-    assert_eq!(thumbnail.levels.len(), thumbnail.side * thumbnail.side);
-    assert_eq!(thumbnail.present.len(), thumbnail.side * thumbnail.side);
-    assert!(
-        thumbnail.present.iter().filter(|&&p| p).count() == thumbnail.sampled,
-        "every sampled square gets exactly one cell"
-    );
-    assert!(thumbnail.binarized <= thumbnail.sampled);
-
-    // Every ring lands on a cell that holds a square, and inside the canvas.
-    assert!(!thumbnail.sites.is_empty(), "a coded pattern has coding sites");
-    for site in &thumbnail.sites {
-        assert!(site.col < thumbnail.side && site.row < thumbnail.side);
-        assert!(
-            thumbnail.present[site.row * thumbnail.side + site.col],
-            "a site was ringed on padding"
+    // Coding cells sit at one residue per axis, and nowhere else.
+    for cell in &readout.cells {
+        use vernier_pose::absolute::CellRole;
+        let on_x = cell.x.rem_euclid(3) == readout.orientation.coding1;
+        let on_y = cell.y.rem_euclid(3) == readout.orientation.coding2;
+        let expected_coding = on_x || on_y;
+        let is_coding = matches!(
+            cell.role,
+            CellRole::CodingX | CellRole::CodingY | CellRole::CodingBoth
         );
+        // The dropped corner outranks a coding role, so only check the rest.
+        if cell.role != CellRole::MissingCorner {
+            assert_eq!(is_coding, expected_coding, "cell ({}, {})", cell.x, cell.y);
+        }
     }
 
-    // And the centre crosshair stays inside the canvas it is drawn on.
-    let (cx, cy) = thumbnail.centre;
-    assert!((0.0..thumbnail.side as f64).contains(&cx));
-    assert!((0.0..thumbnail.side as f64).contains(&cy));
+    // One bit per triple: every CodingX cell in a triple must agree.
+    let mut by_triple: std::collections::BTreeMap<i64, std::collections::BTreeSet<u8>> =
+        std::collections::BTreeMap::new();
+    for cell in &readout.cells {
+        if cell.role == vernier_pose::absolute::CellRole::CodingX {
+            if let Some(bit) = cell.bit {
+                by_triple.entry(cell.x.div_euclid(3)).or_default().insert(bit);
+            }
+        }
+    }
+    assert!(by_triple.len() > 4, "only {} x triples in frame", by_triple.len());
+    for (triple, bits) in &by_triple {
+        assert_eq!(bits.len(), 1, "triple {triple} read two different bits: {bits:?}");
+    }
+
+    // And the code the same cells decoded to is a window of the real sequence.
+    let code = readout.code.expect("the megarena decodes at the home distance");
+    assert_eq!(code.x_window.len(), pattern.order as usize);
+    assert_eq!(code.y_window.len(), pattern.order as usize);
 }

@@ -4,10 +4,10 @@
 //! WebAssembly and executed in the page: there is no server behind it.
 //!
 //! `vernier_spectral::analyze_two` does the same work but hands back only the
-//! fitted planes and the phase maps: the spectrum and the band-passed lobes are
-//! intermediate buffers it drops. Those are most of what there is to look at
-//! here, so this runs the same sequence of backend operations and copies the
-//! two spectra out on the way past. The extra cost is two buffer copies.
+//! fitted planes and the phase maps: the spectrum it transformed is an
+//! intermediate buffer it drops, and that is most of what there is to look at
+//! here. So this runs the same sequence of backend operations and copies the
+//! spectrum out on the way past, at the cost of one download.
 
 use vernier_core::buffer::BufferLayout;
 use vernier_core::{Complex32, ComputeBackend, ComputeJob, Real, Result};
@@ -21,8 +21,6 @@ pub struct Stages {
     /// decides whether to compress it: keeping the honest magnitudes here means
     /// switching scales costs a texture upload rather than another transform.
     pub spectrum: Vec<f32>,
-    /// Magnitude of the two band-passed lobes together, centred and linear.
-    pub filtered: Vec<f32>,
     /// The pattern rebuilt from the two carriers alone.
     pub reconstruction: Vec<f32>,
     /// Wrapped phase of each direction, as the planes saw it.
@@ -103,7 +101,7 @@ pub fn run<B: ComputeBackend>(
     let layout = BufferLayout::packed(size, size);
     let data: Vec<Complex32> = image.iter().map(|&v| Complex32::new(v, 0.0)).collect();
 
-    let (raw, filtered1, filtered2, field1, field2, peak_bins) = {
+    let (raw, field1, field2, peak_bins) = {
         let mut job = backend.begin()?;
         let mut buffer = job.upload(&data, layout)?;
         job.fft2d(&mut buffer)?;
@@ -124,15 +122,10 @@ pub fn run<B: ComputeBackend>(
         job.bandpass_from_peaks(&mut field1, &peaks, 0, sigma)?;
         job.bandpass_from_peaks(&mut field2, &peaks, 1, sigma)?;
 
-        // Kept before the inverse transform: afterwards these buffers hold the
-        // spatial field, and the filtered spectrum is gone.
-        let filtered1 = job.copy_buffer(&field1)?;
-        let filtered2 = job.copy_buffer(&field2)?;
-
         job.ifft2d(&mut field1)?;
         job.ifft2d(&mut field2)?;
         job.submit()?;
-        (buffer, filtered1, filtered2, field1, field2, peaks)
+        (buffer, field1, field2, peaks)
     };
 
     let peaks_data = backend.download(&peak_bins)?;
@@ -146,12 +139,6 @@ pub fn run<B: ComputeBackend>(
     ];
 
     let spectrum = centre_spectrum(&backend.download(&raw)?, size);
-
-    let lobes1 = backend.download(&filtered1)?;
-    let lobes2 = backend.download(&filtered2)?;
-    let combined: Vec<Complex32> =
-        lobes1.iter().zip(&lobes2).map(|(&a, &b)| a + b).collect();
-    let filtered = centre_spectrum(&combined, size);
 
     let spatial1 = backend.download(&field1)?;
     let spatial2 = backend.download(&field2)?;
@@ -179,7 +166,6 @@ pub fn run<B: ComputeBackend>(
 
     Ok(Some(Stages {
         spectrum,
-        filtered,
         reconstruction,
         phase1: wrapped1.iter().map(|&v| v as f32).collect(),
         phase2: wrapped2.iter().map(|&v| v as f32).collect(),
