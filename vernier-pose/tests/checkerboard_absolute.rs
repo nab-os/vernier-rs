@@ -2,9 +2,10 @@ use vernier_core::Complex32;
 use vernier_core::buffer::BufferLayout;
 use vernier_cpu::CpuBackend;
 use vernier_patterns::PatternPose;
-use vernier_patterns::checkerboard::{Checkerboard, CodeLayout};
+use vernier_patterns::checkerboard::{Checkerboard, CodeLayout, CodePacking};
 use vernier_pose::checkerboard::{
-    CheckerboardError, detect_checkerboard, extract_code, solve_checkerboard_with_layout,
+    CheckerboardError, detect_checkerboard_with_packing, extract_code,
+    solve_checkerboard_with_packing,
 };
 use vernier_spectral::spectrum::analyze_two;
 
@@ -30,10 +31,16 @@ fn random_poses(seed: u64, n: usize) -> Vec<PatternPose> {
 fn solve(pattern: &Checkerboard, pose: &PatternPose) -> vernier_core::Pose {
     let image = pattern.render(SIZE, SIZE, pose);
     let buffer = BufferLayout::packed(SIZE, SIZE);
-    let detection = detect_checkerboard(&CpuBackend::new(), image.as_slice(), buffer, 4.0, 10, 0, 0.0).unwrap();
-    solve_checkerboard_with_layout(&detection, image.as_slice(), SQUARE, ORDER, pattern.code_layout())
-        .unwrap_or_else(|e| panic!("{:?} at {pose:?}: {e}", pattern.code_layout()))
-        .0
+    let packing = pattern.code_packing();
+    let detection = detect_checkerboard_with_packing(
+        &CpuBackend::new(), image.as_slice(), buffer, 4.0, 10, 0, 0.0, packing,
+    )
+    .unwrap();
+    solve_checkerboard_with_packing(
+        &detection, image.as_slice(), SQUARE, ORDER, pattern.code_layout(), packing,
+    )
+    .unwrap_or_else(|e| panic!("{:?}/{packing:?} at {pose:?}: {e}", pattern.code_layout()))
+    .0
 }
 
 fn position_error(pattern: &Checkerboard, pose: &PatternPose) -> f64 {
@@ -95,4 +102,30 @@ fn refuses_a_subharmonic_lock() {
             Err(CheckerboardError::SubharmonicLock)
         ));
     }
+}
+
+/// The same round trip on the denser packing: two bits per supercell means the
+/// decoder has to lift each run's position by its slot parity, not just by the
+/// LFSR index, or it lands half a supercell out.
+#[test]
+fn decodes_random_poses_with_two_bit_packing() {
+    for layout in LAYOUTS {
+        let pattern = Checkerboard::new(SQUARE, ORDER)
+            .unwrap()
+            .with_code_layout(layout)
+            .with_code_packing(CodePacking::TwoBits);
+        for pose in random_poses(0x2545_f491_4f6c_dd1d, 24) {
+            let error = position_error(&pattern, &pose);
+            assert!(error < 0.25, "{layout:?} at {pose:?}: {error:.3} px");
+        }
+    }
+}
+
+/// The denser packing must reach further for the same order: its supercell is
+/// bigger, so one sequence spans more squares.
+#[test]
+fn two_bit_packing_reaches_further() {
+    let one = Checkerboard::new(SQUARE, ORDER).unwrap();
+    let two = one.clone().with_code_packing(CodePacking::TwoBits);
+    assert!(two.range_squares() > one.range_squares());
 }

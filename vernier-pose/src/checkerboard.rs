@@ -13,9 +13,7 @@ use std::collections::BTreeMap;
 use vernier_core::scalar::consts::{PI, TAU};
 use vernier_core::buffer::BufferLayout;
 use vernier_core::{Complex32, ComputeBackend, Pose, Real};
-use vernier_patterns::checkerboard::{
-    CELL, Checkerboard, CodeLayout, U_SITE, V_SITE, X_SITE, Y_SITE,
-};
+use vernier_patterns::checkerboard::{Checkerboard, CodeLayout, CodePacking};
 use vernier_patterns::lfsr::{Lfsr, WindowIndex};
 use vernier_spectral::spectrum::{Detection, analyze_two};
 
@@ -91,7 +89,7 @@ pub enum CheckerboardError {
     UnsupportedOrder(u32),
     NotEnoughSquares,
     NoConsistentHypothesis,
-    /// Detection locked onto the code's 1/3-frequency line. Use `detect_checkerboard`.
+    /// Detection locked onto the code's sub-carrier line. Use `detect_checkerboard`.
     SubharmonicLock,
     /// The code matched no better than chance.
     WeakEvidence,
@@ -124,7 +122,7 @@ impl std::fmt::Display for CheckerboardError {
             Self::SubharmonicLock => {
                 write!(
                     f,
-                    "carrier detection locked onto the code's one-third line; \
+                    "carrier detection locked onto the code's sub-carrier line; \
                      detect with detect_checkerboard"
                 )
             }
@@ -148,9 +146,19 @@ pub fn extract_code_with_layout(
     order: u32,
     layout: CodeLayout,
 ) -> Result<CheckerboardCode, CheckerboardError> {
+    extract_code_with_packing(detection, intensity, order, layout, CodePacking::OneBit)
+}
+
+pub fn extract_code_with_packing(
+    detection: &Detection,
+    intensity: &[f32],
+    order: u32,
+    layout: CodeLayout,
+    packing: CodePacking,
+) -> Result<CheckerboardCode, CheckerboardError> {
     let lfsr = Lfsr::maximal(order).ok_or(CheckerboardError::UnsupportedOrder(order))?;
 
-    if subharmonic_ratios(detection, intensity)
+    if subharmonic_ratios_with_packing(detection, intensity, packing)
         .iter()
         .any(|&r| r > SUBHARMONIC_LIMIT)
     {
@@ -170,7 +178,11 @@ pub fn extract_code_with_layout(
         detection.width,
         detection.height,
     );
-    if samples.len() < 9 * (order as usize + MIN_SPARE_BITS) {
+    // Squares per bit in two dimensions: one supercell holds `bits_per_cell`
+    // of them per axis.
+    let squares_per_bit =
+        (packing.cell() * packing.cell() / packing.bits_per_cell()) as usize;
+    if samples.len() < squares_per_bit * (order as usize + MIN_SPARE_BITS) {
         return Err(CheckerboardError::NotEnoughSquares);
     }
     let white = binarize(&samples);
@@ -190,7 +202,7 @@ pub fn extract_code_with_layout(
         .iter()
         .enumerate()
         .flat_map(|(transform_index, matrix)| {
-            try_transform(&white, centre_measured, transform_index, matrix, layout, &lfsr, &index, order)
+            try_transform(&white, centre_measured, transform_index, matrix, layout, packing, &lfsr, &index, order)
         })
         .collect();
     candidates.sort_by(|a, b| {
@@ -413,27 +425,39 @@ impl Demodulator {
 /// 3× lands on the real carrier and the ratio is large. On a real lock, 3× is
 /// the third harmonic, about 1/9.
 pub fn subharmonic_ratios(detection: &Detection, intensity: &[f32]) -> [Real; 2] {
+    subharmonic_ratios_with_packing(detection, intensity, CodePacking::OneBit)
+}
+
+/// The code repeats every `cell` squares, so if the peak search locked onto its
+/// line instead of the carrier, the carrier sits at `cell` times the found bin
+/// and dwarfs it. Measured ~0.1 for a true lock, 1.3 and up for a false one.
+pub fn subharmonic_ratios_with_packing(
+    detection: &Detection,
+    intensity: &[f32],
+    packing: CodePacking,
+) -> [Real; 2] {
     let (w, h) = (detection.width, detection.height);
+    let cell = packing.cell();
     [detection.dir1.peak_bin, detection.dir2.peak_bin].map(|(px, py)| {
         let (bx, by) = (signed_bin(px, w), signed_bin(py, h));
-        let (tx, ty) = (3 * bx, 3 * by);
+        let (tx, ty) = (cell * bx, cell * by);
         if tx.abs() + 2 >= (w / 2) as i64 || ty.abs() + 2 >= (h / 2) as i64 {
             return 0.0;
         }
         let step = if tx.abs() + 2 < (w / 4) as i64 && ty.abs() + 2 < (h / 4) as i64 { 2 } else { 1 };
         let demod = Demodulator::new(intensity, w, h, step);
         let base = demod.amplitude(bx, by);
-        let mut third: Real = 0.0;
+        let mut harmonic: Real = 0.0;
         for dy in -2..=2 {
             for dx in -2..=2 {
-                third = third.max(demod.amplitude(tx + dx, ty + dy));
+                harmonic = harmonic.max(demod.amplitude(tx + dx, ty + dy));
             }
         }
-        third / base.max(1e-12)
+        harmonic / base.max(1e-12)
     })
 }
 
-/// `analyze_two`, retried above the peak if it locked onto the code's 1/3 line.
+/// `analyze_two`, retried above the peak if it locked onto the code's line.
 pub fn detect_checkerboard<B: ComputeBackend>(
     backend: &B,
     intensity: &[f32],
@@ -443,9 +467,32 @@ pub fn detect_checkerboard<B: ComputeBackend>(
     max_frequency: usize,
     smoothing_sigma: Real,
 ) -> vernier_core::Result<Detection> {
+    detect_checkerboard_with_packing(
+        backend,
+        intensity,
+        layout,
+        sigma,
+        min_frequency,
+        max_frequency,
+        smoothing_sigma,
+        CodePacking::OneBit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn detect_checkerboard_with_packing<B: ComputeBackend>(
+    backend: &B,
+    intensity: &[f32],
+    layout: BufferLayout,
+    sigma: Real,
+    min_frequency: usize,
+    max_frequency: usize,
+    smoothing_sigma: Real,
+    packing: CodePacking,
+) -> vernier_core::Result<Detection> {
     let complex: Vec<Complex32> = intensity.iter().map(|&v| Complex32::new(v, 0.0)).collect();
     let first = analyze_two(backend, &complex, layout, sigma, min_frequency, max_frequency, smoothing_sigma)?;
-    let ratios = subharmonic_ratios(&first, intensity);
+    let ratios = subharmonic_ratios_with_packing(&first, intensity, packing);
     if ratios.iter().all(|&r| r <= SUBHARMONIC_LIMIT) {
         return Ok(first);
     }
@@ -460,13 +507,18 @@ pub fn detect_checkerboard<B: ComputeBackend>(
             ((bx * bx + by * by) as Real).sqrt()
         })
         .fold(0.0, Real::max);
-    // Search between the false line (r) and the real carrier (3r).
+    // Search above the false line (r) but below the real carrier, which sits at
+    // `cell` times it.
     let raised = min_frequency.max((2.0 * false_radius).ceil() as usize);
     let Ok(second) = analyze_two(backend, &complex, layout, sigma, raised, max_frequency, smoothing_sigma)
     else {
         return Ok(first);
     };
-    let worst = |d: &Detection| subharmonic_ratios(d, intensity).into_iter().fold(0.0, Real::max);
+    let worst = |d: &Detection| {
+        subharmonic_ratios_with_packing(d, intensity, packing)
+            .into_iter()
+            .fold(0.0, Real::max)
+    };
     if worst(&second) < worst(&first) { Ok(second) } else { Ok(first) }
 }
 
@@ -475,13 +527,6 @@ fn code_coords(layout: CodeLayout, i: i64, j: i64) -> (i64, i64) {
     match layout {
         CodeLayout::Squares => (i, j),
         CodeLayout::Diamonds => (i + j, i - j),
-    }
-}
-
-fn layout_sites(layout: CodeLayout) -> ((i64, i64), (i64, i64)) {
-    match layout {
-        CodeLayout::Squares => (X_SITE, Y_SITE),
-        CodeLayout::Diamonds => (U_SITE, V_SITE),
     }
 }
 
@@ -497,22 +542,25 @@ fn try_transform(
     transform_index: usize,
     matrix: &[i64; 4],
     layout: CodeLayout,
+    packing: CodePacking,
     lfsr: &Lfsr,
     index: &WindowIndex,
     order: u32,
 ) -> Vec<CheckerboardCode> {
     let map = build_defect_map(white, matrix);
 
-    // About 1 square in 9 should be a defect.
+    // Roughly one square in nine is a defect at one bit per supercell, one in
+    // thirteen at two — both well inside this band.
     let rate = map.squares.iter().filter(|&&(_, defect)| defect).count() as Real
         / map.squares.len() as Real;
     if !(0.02..0.30).contains(&rate) {
         return Vec::new();
     }
 
+    let cell = packing.cell();
     let mut candidates = Vec::new();
-    for delta_i_residue in 0..CELL {
-        for delta_j_residue in 0..CELL {
+    for delta_i_residue in 0..cell {
+        for delta_j_residue in 0..cell {
             candidates.extend(try_origin(
                 &map,
                 centre_measured,
@@ -520,6 +568,7 @@ fn try_transform(
                 matrix,
                 (delta_i_residue, delta_j_residue),
                 layout,
+                packing,
                 lfsr,
                 index,
                 order,
@@ -570,35 +619,57 @@ fn try_origin(
     matrix: &[i64; 4],
     delta_residue: (i64, i64),
     layout: CodeLayout,
+    packing: CodePacking,
     lfsr: &Lfsr,
     index: &WindowIndex,
     order: u32,
 ) -> Option<CheckerboardCode> {
-    let site_residue = |pattern: (i64, i64)| {
-        (
-            (pattern.0 - delta_residue.0).rem_euclid(CELL),
-            (pattern.1 - delta_residue.1).rem_euclid(CELL),
-        )
-    };
-    let (site_a, site_b) = layout_sites(layout);
-    let a_residue = site_residue(site_a);
-    let b_residue = site_residue(site_b);
+    let (cell, per_cell) = (packing.cell(), packing.bits_per_cell());
+    let (x_sites, y_sites) = (packing.x_sites(), packing.y_sites());
 
-    let (x_bits, x_first_cell) = read_site_bits(map, layout, a_residue, true)?;
-    let (y_bits, y_first_cell) = read_site_bits(map, layout, b_residue, false)?;
+    let (x_bits, x_first) = read_site_bits(map, layout, packing, delta_residue, x_sites, true)?;
+    let (y_bits, y_first) = read_site_bits(map, layout, packing, delta_residue, y_sites, false)?;
     let (k_x, x_checks, x_errors) = localize(&x_bits, lfsr, index, order)?;
     let (k_y, y_checks, y_errors) = localize(&y_bits, lfsr, index, order)?;
 
-    // Offset from our frame to the pattern's, in code coordinates.
-    let delta_a = (CELL * k_x + site_a.0) - (CELL * x_first_cell + a_residue.0);
-    let delta_b = (CELL * k_y + site_b.1) - (CELL * y_first_cell + b_residue.1);
+    // `localize` places the run only modulo the sequence length, but a bit's
+    // slot inside its supercell is congruent to its index modulo
+    // `per_cell`, and we read that slot directly. The length is odd, so the
+    // two facts together pin the index modulo `per_cell · len` — without this
+    // lift, a two-bit packing would be a half-supercell out half the time.
+    let length = lfsr.len() as i64;
+    // The length is odd and `per_cell` is 1 or 2, so stepping by a length walks
+    // every slot residue: `per_cell` steps always suffice.
+    let lift = |k: i64, first_slot: i64| {
+        let want = first_slot.rem_euclid(per_cell);
+        let mut bit = k.rem_euclid(length);
+        for _ in 0..per_cell {
+            if bit.rem_euclid(per_cell) == want {
+                break;
+            }
+            bit += length;
+        }
+        bit
+    };
+    // Coordinate, along the coded axis, of a bit slot in the pattern's frame.
+    let coord = |slot_index: i64, sites: &[(i64, i64)], by_i: bool| {
+        let site = sites[slot_index.rem_euclid(per_cell) as usize];
+        cell * slot_index.div_euclid(per_cell) + if by_i { site.0 } else { site.1 }
+    };
+
+    // Offset from our frame to the pattern's, in code coordinates. `read_site_bits`
+    // indexed the run in the shifted frame, so undo that shift here.
+    let delta_a =
+        coord(lift(k_x, x_first), x_sites, true) - coord(x_first, x_sites, true) + delta_residue.0;
+    let delta_b = coord(lift(k_y, y_first), y_sites, false) - coord(y_first, y_sites, false)
+        + delta_residue.1;
 
     // Diagonal layout: back to (i, j). The deltas are only known modulo an odd
     // period, so if their sum is odd, shift one by a period to make it even.
     let (delta_i, delta_j) = match layout {
         CodeLayout::Squares => (delta_a, delta_b),
         CodeLayout::Diamonds => {
-            let period = CELL * lfsr.len() as i64;
+            let period = cell * lfsr.len() as i64;
             let delta_b = if (delta_a + delta_b).rem_euclid(2) != 0 {
                 delta_b + period
             } else {
@@ -614,7 +685,7 @@ fn try_origin(
     let raw_j = matrix[2] as Real * i + matrix[3] as Real * j + delta_j as Real;
 
     // Wrap to one code period, in (i, j) for both layouts.
-    let period = (CELL * lfsr.len() as i64) as Real;
+    let period = (cell * lfsr.len() as i64) as Real;
     let wrap = |value: Real| value - period * (value / period).floor();
     let (centre_i, centre_j) = (wrap(raw_i), wrap(raw_j));
 
@@ -630,26 +701,48 @@ fn try_origin(
         check_bits: x_checks + y_checks,
         bit_errors: (x_errors, y_errors),
         runner_up_false_accept: Real::INFINITY,
-        false_accept: chance_by_luck(x_checks, x_errors) * chance_by_luck(y_checks, y_errors) * HYPOTHESES,
+        false_accept: chance_by_luck(x_checks, x_errors)
+            * chance_by_luck(y_checks, y_errors)
+            * hypotheses(packing),
     })
 }
 
-/// One bit per supercell by majority vote; returns the longest consecutive run
-/// and the index of its first supercell.
+/// One bit per coding site by majority vote, keyed by the site's index in the
+/// sequence rather than by its supercell, so a packing carrying several bits
+/// per supercell still yields one run of consecutive bits. Returns the longest
+/// run and the index of its first bit.
 fn read_site_bits(
     map: &DefectMap,
     layout: CodeLayout,
-    residue: (i64, i64),
+    packing: CodePacking,
+    delta_residue: (i64, i64),
+    sites: &[(i64, i64)],
     by_i: bool,
 ) -> Option<(Vec<u8>, i64)> {
+    let (cell, per_cell) = (packing.cell(), packing.bits_per_cell());
     let mut votes: BTreeMap<i64, (usize, usize)> = BTreeMap::new();
     for &((i, j), defect) in &map.squares {
         let (first, second) = code_coords(layout, i, j);
-        if (first.rem_euclid(CELL), second.rem_euclid(CELL)) != residue {
+        // Shift into the frame this hypothesis proposes. Indexing in the
+        // pattern's own frame is what keeps a supercell's bits consecutive:
+        // subtracting the residue instead reorders the slots whenever the shift
+        // carries one of them across a supercell boundary, and the run shatters.
+        let (shifted_first, shifted_second) = (first + delta_residue.0, second + delta_residue.1);
+        let within = (
+            shifted_first.rem_euclid(cell),
+            shifted_second.rem_euclid(cell),
+        );
+        // The two axes never share a site, so a residue match names one slot.
+        let Some(slot) = sites.iter().position(|&s| s == within) else {
             continue;
-        }
-        let cell = if by_i { first } else { second }.div_euclid(CELL);
-        let entry = votes.entry(cell).or_insert((0, 0));
+        };
+        let (axis, site) = if by_i {
+            (shifted_first, sites[slot].0)
+        } else {
+            (shifted_second, sites[slot].1)
+        };
+        let bit = per_cell * (axis - site).div_euclid(cell) + slot as i64;
+        let entry = votes.entry(bit).or_insert((0, 0));
         entry.0 += usize::from(defect);
         entry.1 += 1;
     }
@@ -657,7 +750,7 @@ fn read_site_bits(
     // A defect is a 0 bit.
     let bits: Vec<(i64, u8)> = votes
         .into_iter()
-        .map(|(cell, (defective, total))| (cell, u8::from(2 * defective <= total)))
+        .map(|(slot, (defective, total))| (slot, u8::from(2 * defective <= total)))
         .collect();
 
     let mut best: (usize, usize) = (0, 0); // (start index, length)
@@ -713,7 +806,11 @@ fn chance_by_luck(spare: usize, errors: usize) -> Real {
 /// Correct decodes measured ≤ 0.006, garbage ones ≥ 20.
 const MAX_FALSE_ACCEPT: Real = 0.1;
 
-const HYPOTHESES: Real = (TRANSFORMS.len() as i64 * CELL * CELL) as Real;
+/// Orientations times supercell origins — every placement the search tries,
+/// which is what a match has to beat to count as evidence.
+fn hypotheses(packing: CodePacking) -> Real {
+    (TRANSFORMS.len() as i64 * packing.cell() * packing.cell()) as Real
+}
 
 /// Finds the bit run in the LFSR, trying every anchor and scoring the whole run.
 /// Returns (position of first bit, spare bits, errors).
@@ -771,7 +868,25 @@ pub fn solve_checkerboard_with_layout(
     order: u32,
     layout: CodeLayout,
 ) -> Result<(Pose, CheckerboardCode), CheckerboardError> {
-    let code = extract_code_with_layout(detection, intensity, order, layout)?;
+    solve_checkerboard_with_packing(
+        detection,
+        intensity,
+        square_size,
+        order,
+        layout,
+        CodePacking::OneBit,
+    )
+}
+
+pub fn solve_checkerboard_with_packing(
+    detection: &Detection,
+    intensity: &[f32],
+    square_size: Real,
+    order: u32,
+    layout: CodeLayout,
+    packing: CodePacking,
+) -> Result<(Pose, CheckerboardCode), CheckerboardError> {
+    let code = extract_code_with_packing(detection, intensity, order, layout, packing)?;
 
     // Centre in the lattice frame, then in the pattern frame (turned for diamonds).
     let (x, y) = layout.from_lattice(

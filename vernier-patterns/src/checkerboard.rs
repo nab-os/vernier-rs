@@ -32,8 +32,7 @@ use crate::PatternPose;
 use crate::lfsr::Lfsr;
 use crate::render::{MAX_CORNER_RADIUS, into_pattern_frame, render_with, rounded_cell};
 
-/// Squares per supercell edge, for [`CodePacking::OneBit`]. The decoder in
-/// `vernier-pose` is written against this packing; use
+/// Squares per supercell edge, for [`CodePacking::OneBit`]. Use
 /// [`CodePacking::cell`] to stay general.
 pub const CELL: i64 = 3;
 

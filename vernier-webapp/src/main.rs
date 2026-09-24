@@ -540,8 +540,7 @@ fn packing_hint(packing: CodePacking) -> &'static str {
         }
         CodePacking::TwoBits => {
             "2.5 squares per bit: 1.2× the density off a sparser, quieter code \
-             (7.9% of squares inverted against 11.3%). Render and spectrum only \
-             — the decoder still assumes the 3×3 packing."
+             (7.9% of squares inverted against 11.3%)."
         }
     }
 }
