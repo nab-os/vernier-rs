@@ -3307,6 +3307,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vernier-pose"
+version = "0.1.0"
+dependencies = [
+ "vernier-core",
+ "vernier-patterns",
+ "vernier-spectral",
+]
+
+[[package]]
 name = "vernier-spectral"
 version = "0.1.0"
 dependencies = [
@@ -3322,6 +3331,7 @@ dependencies = [
  "vernier-core",
  "vernier-cpu",
  "vernier-patterns",
+ "vernier-pose",
  "vernier-spectral",
  "wasm-bindgen",
  "web-sys",

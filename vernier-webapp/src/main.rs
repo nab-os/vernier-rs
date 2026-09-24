@@ -9,6 +9,7 @@
 
 mod camera;
 mod canvas;
+mod coding;
 mod controls;
 mod explorer;
 #[cfg(test)]
@@ -536,7 +537,7 @@ fn packing_label(packing: CodePacking) -> &'static str {
 fn packing_hint(packing: CodePacking) -> &'static str {
     match packing {
         CodePacking::OneBit => {
-            "Three squares per bit. What the decoder in vernier-pose reads."
+            "Three squares per bit. The checkerboard's original packing."
         }
         CodePacking::TwoBits => {
             "2.5 squares per bit: 1.2× the density off a sparser, quieter code \

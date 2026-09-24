@@ -1,7 +1,8 @@
 //! The spectrum explorer view: one pattern, one camera, and every stage the
 //! detector passes through laid out beside each other.
 //!
-//!   camera image → FFT → peak selection → band-pass → reconstruction → phases
+//!   camera image → FFT and peak selection → reconstruction → phases
+//!     → thumbnail and code
 //!
 //! Drag the camera image and watch the spectrum answer.
 
@@ -11,8 +12,9 @@ use vernier_cpu::CpuBackend;
 
 use crate::camera::{self, Pose6};
 use crate::canvas;
+use crate::coding::{CENTRE_COLOUR, Source, Thumbnail};
 use crate::controls::{NumberField, Section, Toggle};
-use crate::pattern::PatternSettings;
+use crate::pattern::{PatternKind, PatternSettings};
 use crate::spectral::{self, Stages};
 
 /// Sides the transform is run at. Every stage is `size × size`, and the cost is
@@ -20,15 +22,24 @@ use crate::spectral::{self, Stages};
 /// that decides whether dragging keeps up.
 const SIZE_PRESETS: [usize; 3] = [128, 256, 512];
 
-/// DOM ids of the six stage canvases, in the order they are shown.
-const PANELS: [(&str, &str); 6] = [
+/// DOM ids of the five stage canvases, in the order they are shown.
+///
+/// The spectrum appears once, with the peak selection drawn on it: two panels
+/// showed the same pixels, and the picked peaks say more sitting on the
+/// spectrum they were picked from than beside a copy of it. The band-passed
+/// lobes are gone with them — two dots where the peak markers already are.
+const PANELS: [(&str, &str); 5] = [
     ("explorer-image", "1. Camera image"),
-    ("explorer-spectrum", "2. FFT · magnitude"),
-    ("explorer-peaks", "3. Peak selection"),
-    ("explorer-filtered", "4. Band-passed lobes"),
-    ("explorer-reconstruction", "5. Reconstruction"),
-    ("explorer-phases", "6. Wrapped phases 1 / 2"),
+    ("explorer-spectrum", "2. FFT · magnitude and peak selection"),
+    ("explorer-reconstruction", "3. Reconstruction"),
+    ("explorer-phases", "4. Wrapped phases · red 1, green 2"),
+    ("explorer-thumbnail", "5. Extracted thumbnail · coding sites"),
 ];
+
+/// Index of the panel the peak overlay belongs to.
+const PEAKS_PANEL: usize = 1;
+/// Index of the panel the coding overlay belongs to.
+const THUMBNAIL_PANEL: usize = 4;
 
 const MAX_TILT_DEG: Real = 63.0;
 const DRAG_ALPHA_DEG: Real = 0.25;
@@ -48,7 +59,7 @@ pub struct ExplorerSettings {
     pub min_frequency: usize,
     /// Blur applied before the peak search, in bins.
     pub smoothing_sigma: Real,
-    /// Compress the FFT panels logarithmically. Without it a coded pattern's
+    /// Compress the FFT panel logarithmically. Without it a coded pattern's
     /// peaks leave the rest of the spectrum at black.
     pub log_spectra: bool,
 }
@@ -77,6 +88,9 @@ impl ExplorerSettings {
 struct Report {
     render_ms: f64,
     analyse_ms: f64,
+    /// Time in the square sampling and the code search, which only the coded
+    /// patterns pay.
+    decode_ms: f64,
     error: Option<String>,
     peaks: Option<[(Real, Real); 2]>,
     plane_deg: Option<[Real; 2]>,
@@ -84,6 +98,8 @@ struct Report {
     /// Carrier period the camera should be producing, in image pixels, shown
     /// beside the measured one.
     expected_period_px: Real,
+    /// The lattice-level extraction, for the patterns that carry a code.
+    thumbnail: Option<Thumbnail>,
 }
 
 #[component]
@@ -153,6 +169,31 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
                 let radius = (px * px + py * py).sqrt();
                 outcome.measured_period_px =
                     (radius > 0.0).then(|| view.size as Real / radius);
+
+                // Only the coded patterns have a lattice to extract; the
+                // rest of the chain is the same for every kind.
+                if let Some(source) = coding_source(&pattern) {
+                    let detection = stages.detection(view.size);
+                    outcome.thumbnail =
+                        Thumbnail::extract(&detection, image.as_slice(), source);
+                }
+                outcome.decode_ms = canvas::now_ms() - analysed;
+
+                match &outcome.thumbnail {
+                    Some(thumbnail) => {
+                        if let Err(message) = canvas::paint_thumbnail(
+                            PANELS[THUMBNAIL_PANEL].0,
+                            thumbnail.side,
+                            &thumbnail.levels,
+                            &thumbnail.present,
+                        ) {
+                            outcome.error = Some(message);
+                        }
+                    }
+                    None => {
+                        let _ = canvas::clear(PANELS[THUMBNAIL_PANEL].0);
+                    }
+                }
             }
             Ok(None) => {
                 outcome.error = Some(
@@ -302,7 +343,7 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
 
                 Section { title: "Display".to_string(),
                     Toggle {
-                        label: "Log scale on the FFT panels".to_string(),
+                        label: "Log scale on the FFT panel".to_string(),
                         checked: view.log_spectra,
                         hint: String::new(),
                         on_change: move |value: bool| explorer.write().log_spectra = value,
@@ -335,7 +376,7 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
                     }
                     p { class: "timing",
                         "{view.size}×{view.size} px · render {current.render_ms:.0} ms · \
-                         analyse {current.analyse_ms:.0} ms"
+                         analyse {current.analyse_ms:.0} ms · decode {current.decode_ms:.0} ms"
                     }
                 }
 
@@ -350,17 +391,38 @@ pub fn Explorer(settings: Signal<PatternSettings>, explorer: Signal<ExplorerSett
                             id: id.to_string(),
                             title: title.to_string(),
                             draggable: index == 0,
-                            overlay: index == 2,
+                            overlay: match index {
+                                PEAKS_PANEL => Overlay::Peaks,
+                                THUMBNAIL_PANEL => Overlay::Coding,
+                                _ => Overlay::None,
+                            },
                             explorer,
-                            settings,
                             size: view.size,
                             peaks: current.peaks,
+                            thumbnail: current.thumbnail.clone(),
+                            note: (index == THUMBNAIL_PANEL
+                                && coding_source(&pattern).is_none())
+                                .then(|| {
+                                    "Only the coded patterns have a lattice to \
+                                     extract. Pick Checkerboard or Megarena."
+                                        .to_string()
+                                }),
                         }
                     }
                 }
             }
         }
     }
+}
+
+/// What is drawn on top of a stage canvas.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Overlay {
+    None,
+    /// The two carrier peaks, on the spectrum they were picked from.
+    Peaks,
+    /// The squares the code inverted, on the thumbnail they were read from.
+    Coding,
 }
 
 /// One captioned stage canvas.
@@ -370,11 +432,12 @@ fn StagePanel(
     id: String,
     title: String,
     draggable: bool,
-    overlay: bool,
+    overlay: Overlay,
     explorer: Signal<ExplorerSettings>,
-    settings: Signal<PatternSettings>,
     size: usize,
     peaks: Option<[(Real, Real); 2]>,
+    thumbnail: Option<Thumbnail>,
+    note: Option<String>,
 ) -> Element {
     // Where the pointer was last seen, so a move can be turned into a delta.
     let mut last = use_signal(|| None::<(f64, f64)>);
@@ -385,8 +448,14 @@ fn StagePanel(
             div { class: "panel-canvas {draggable_class(draggable)}",
                 canvas { id: "{id}", class: "preview" }
 
-                if overlay {
-                    {peak_overlay(size, peaks)}
+                match overlay {
+                    Overlay::Peaks => peak_overlay(size, peaks),
+                    Overlay::Coding => coding_overlay(thumbnail.as_ref()),
+                    Overlay::None => rsx! {},
+                }
+
+                if let Some(note) = note {
+                    p { class: "panel-note", "{note}" }
                 }
 
                 if draggable {
@@ -440,7 +509,45 @@ fn StagePanel(
                     }
                 }
             }
+
+            // Four marker colours say nothing without this.
+            if let Some(entries) = legend_of(overlay, thumbnail.as_ref()) {
+                ul { class: "panel-legend",
+                    for (colour, meaning) in entries {
+                        li { key: "{meaning}",
+                            span { class: "swatch", style: "background: {colour}" }
+                            "{meaning}"
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+/// The colour key for a panel that has one.
+fn legend_of(
+    overlay: Overlay,
+    thumbnail: Option<&Thumbnail>,
+) -> Option<Vec<(&'static str, &'static str)>> {
+    match overlay {
+        Overlay::Coding => thumbnail.map(|t| t.legend.clone()),
+        _ => None,
+    }
+}
+
+/// Which decoder, if any, the selected pattern has a lattice for. The stubs
+/// and the plain periodic carrier have no code to read, so their thumbnail
+/// panel stays empty rather than showing a lattice that means nothing.
+fn coding_source(pattern: &PatternSettings) -> Option<Source> {
+    match pattern.kind {
+        PatternKind::Checkerboard => Some(Source::Checkerboard {
+            order: pattern.order,
+            layout: pattern.code_layout,
+            packing: pattern.code_packing,
+        }),
+        PatternKind::Megarena => Some(Source::Megarena { order: pattern.order }),
+        PatternKind::Periodic | PatternKind::Stamp | PatternKind::QrLike => None,
     }
 }
 
@@ -497,14 +604,60 @@ fn peak_overlay(size: usize, peaks: Option<[(Real, Real); 2]>) -> Element {
     }
 }
 
-/// Paints stages 2 to 6; stage 1 is painted by the caller.
+/// The coding sites, marked on the thumbnail they were read from, with a cross
+/// on the node the image centre falls in — the one the decoded position is
+/// reported for.
+///
+/// Drawn in cell coordinates, the same space the thumbnail canvas is painted
+/// in, so a mark lands on its node however far the panel scales it up.
+fn coding_overlay(thumbnail: Option<&Thumbnail>) -> Element {
+    let Some(thumbnail) = thumbnail else {
+        return rsx! {};
+    };
+    let side = thumbnail.side as f64;
+    let (cx, cy) = thumbnail.centre;
+    // A cell is one canvas pixel, so every length here is a fraction of one.
+    // Hundreds of sites on a busy lattice need a filled mark to read at all:
+    // an unfilled ring of the same size disappears into the pattern.
+    let stroke = 0.09;
+    let arm = 1.6;
+
+    rsx! {
+        svg {
+            class: "overlay",
+            view_box: "0 0 {side} {side}",
+            preserve_aspect_ratio: "none",
+            for site in thumbnail.sites.iter() {
+                circle {
+                    key: "{site.col}-{site.row}",
+                    cx: "{site.col as f64 + 0.5}",
+                    cy: "{site.row as f64 + 0.5}",
+                    r: "0.34",
+                    fill: site.mark.colour(),
+                    fill_opacity: "0.8",
+                    // Dark rim so a mark stays visible on a bright node too.
+                    stroke: "#10151c",
+                    stroke_width: "{stroke}",
+                }
+            }
+            line {
+                x1: "{cx - arm}", y1: "{cy}", x2: "{cx + arm}", y2: "{cy}",
+                stroke: CENTRE_COLOUR, stroke_width: "{stroke * 2.0}",
+            }
+            line {
+                x1: "{cx}", y1: "{cy - arm}", x2: "{cx}", y2: "{cy + arm}",
+                stroke: CENTRE_COLOUR, stroke_width: "{stroke * 2.0}",
+            }
+        }
+    }
+}
+
+/// Paints stages 2 to 4; stage 1 is painted by the caller, and stage 5 needs
+/// the decode, which not every pattern gets.
 fn paint_stages(stages: &Stages, view: &ExplorerSettings) -> Result<(), String> {
-    let log = view.log_spectra;
-    canvas::paint_grey(PANELS[1].0, view.size, &stages.spectrum, log)?;
-    canvas::paint_grey(PANELS[2].0, view.size, &stages.spectrum, log)?;
-    canvas::paint_grey(PANELS[3].0, view.size, &stages.filtered, log)?;
-    canvas::paint_grey(PANELS[4].0, view.size, &stages.reconstruction, false)?;
-    canvas::paint_phases(PANELS[5].0, view.size, &stages.phase1, &stages.phase2)
+    canvas::paint_grey(PANELS[1].0, view.size, &stages.spectrum, view.log_spectra)?;
+    canvas::paint_grey(PANELS[2].0, view.size, &stages.reconstruction, false)?;
+    canvas::paint_phase_channels(PANELS[3].0, view.size, &stages.phase1, &stages.phase2)
 }
 
 /// The numbers under the stage head.
@@ -538,5 +691,30 @@ fn readouts(report: &Report) -> Vec<(String, String)> {
         "Expected carrier".to_string(),
         format!("{:.2} px", report.expected_period_px),
     ));
+
+    if let Some(thumbnail) = &report.thumbnail {
+        out.push((
+            capitalized(thumbnail.unit),
+            format!(
+                "{} sampled · {} read · {} coding",
+                thumbnail.sampled,
+                thumbnail.judged,
+                thumbnail.sites.len()
+            ),
+        ));
+        if let Some((x_window, y_window)) = &thumbnail.windows {
+            out.push(("Code window".to_string(), format!("{x_window} · {y_window}")));
+        }
+        out.push(("Decoded".to_string(), thumbnail.verdict.clone()));
+    }
     out
+}
+
+/// The node name as a readout label.
+fn capitalized(unit: &str) -> String {
+    let mut chars = unit.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }

@@ -557,6 +557,52 @@ code {
     pointer-events: none;
 }
 
+/* Said over the panel rather than instead of it, so the grid keeps its shape
+   when one stage has nothing to show. */
+.panel-note {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 1.2rem;
+    text-align: center;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: #8a8a8a;
+    background: rgba(10, 10, 12, 0.72);
+    pointer-events: none;
+}
+
+/* The colour key for the overlay above it. Wraps rather than widening the
+   grid column, so the panels stay square whatever the key says. */
+.panel-legend {
+    list-style: none;
+    margin: 0.35rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.6rem;
+    font-size: 0.7rem;
+    color: #9a9a9a;
+}
+
+.panel-legend li {
+    display: flex;
+    align-items: center;
+    gap: 0.28rem;
+    white-space: nowrap;
+}
+
+.panel-legend .swatch {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    border: 1px solid #10151c;
+    flex: none;
+}
+
 .panel-canvas.is-draggable .drag-surface {
     cursor: grab;
     /* The wheel and the drag belong to the camera, not to the page. */
