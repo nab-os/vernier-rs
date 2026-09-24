@@ -21,7 +21,7 @@ use dioxus::prelude::*;
 use controls::{NumberField, Section, Toggle};
 use explorer::{Explorer, ExplorerSettings};
 use pattern::{PatternKind, PatternSettings, MAX_SIDE, MIN_SIDE, ORDER_RANGE};
-use vernier_patterns::checkerboard::CodeLayout;
+use vernier_patterns::checkerboard::{CodeLayout, CodePacking};
 use vernier_patterns::render::MAX_CORNER_RADIUS;
 
 const MAIN_CSS: Asset = asset!("/assets/main.css");
@@ -371,6 +371,23 @@ pub(crate) fn pattern_fields(mut settings: Signal<PatternSettings>, current: &Pa
                 }
                 p { class: "hint", "{layout_hint(current.code_layout)}" }
             }
+            div { class: "field",
+                div { class: "field-head",
+                    label { class: "field-label", "Code packing" }
+                }
+                div { class: "preset-row",
+                    for packing in CodePacking::ALL {
+                        button {
+                            key: "{packing:?}",
+                            r#type: "button",
+                            class: "preset {selected(current.code_packing == packing)}",
+                            onclick: move |_| settings.write().code_packing = packing,
+                            "{packing_label(packing)}"
+                        }
+                    }
+                }
+                p { class: "hint", "{packing_hint(current.code_packing)}" }
+            }
             NumberField {
                 label: "Square side".to_string(),
                 value: current.square_px,
@@ -501,6 +518,30 @@ fn layout_hint(layout: CodeLayout) -> &'static str {
         CodeLayout::Squares => "Code along the square edges; carriers on the diagonals.",
         CodeLayout::Diamonds => {
             "Lattice turned 45°: carriers on the pattern axes, for √2 of range."
+        }
+    }
+}
+
+/// Name of a code packing in the selector.
+fn packing_label(packing: CodePacking) -> &'static str {
+    match packing {
+        CodePacking::OneBit => "1 bit / 3×3",
+        CodePacking::TwoBits => "2 bits / 5×5",
+    }
+}
+
+/// What choosing one costs and buys. Both edges are odd on purpose: an even
+/// supercell would pin every coding site to one colour and pull the fill off
+/// 50/50.
+fn packing_hint(packing: CodePacking) -> &'static str {
+    match packing {
+        CodePacking::OneBit => {
+            "Three squares per bit. What the decoder in vernier-pose reads."
+        }
+        CodePacking::TwoBits => {
+            "2.5 squares per bit: 1.2× the density off a sparser, quieter code \
+             (7.9% of squares inverted against 11.3%). Render and spectrum only \
+             — the decoder still assumes the 3×3 packing."
         }
     }
 }

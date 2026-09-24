@@ -9,7 +9,7 @@
 
 use vernier_core::scalar::consts::SQRT_2;
 use vernier_core::{GrayImage, Real};
-use vernier_patterns::checkerboard::{Checkerboard, CodeLayout};
+use vernier_patterns::checkerboard::{Checkerboard, CodeLayout, CodePacking};
 use vernier_patterns::megarena::Megarena;
 use vernier_patterns::periodic::Periodic;
 use vernier_patterns::qrcode::QrLike;
@@ -77,9 +77,9 @@ impl PatternKind {
             }
             PatternKind::Checkerboard => {
                 "The same LFSR position code on a 50/50 black-and-white carrier. Bits are written by \
-                 inverting one square per axis in each 3×3 supercell, which shrinks the carrier peak \
-                 without rotating it — so the code cannot corrupt the fine pose. Its two carriers run \
-                 along the diagonals, at ±45° to the square edges."
+                 inverting coding squares against their parity, which shrinks the carrier peak without \
+                 rotating it — so the code cannot corrupt the fine pose. Its two carriers run along the \
+                 diagonals, at ±45° to the square edges. The packing sets how many bits a supercell holds."
             }
             PatternKind::Stamp => {
                 "Stamp tile layout. The interface is fixed upstream but the rasterizer is a stub, \
@@ -172,6 +172,10 @@ pub struct PatternSettings {
     /// the lattice 45°, which puts the carriers on the pattern axes instead and
     /// costs √2 of absolute range.
     pub code_layout: CodeLayout,
+    /// How many code bits each supercell carries per axis. `OneBit` is the 3×3
+    /// supercell upstream has always rendered; `TwoBits` packs two bits into a
+    /// 5×5 one, which is denser *and* inverts fewer squares.
+    pub code_packing: CodePacking,
 
     /// Stamp tile side in pixels.
     pub tile_px: usize,
@@ -208,6 +212,8 @@ impl Default for PatternSettings {
             // collapsing the squares to circles the moment the box is ticked.
             corner_radius: 0.25,
             code_layout: CodeLayout::Squares,
+            // Upstream's packing, so the app still opens on what it renders.
+            code_packing: CodePacking::OneBit,
             tile_px: 32,
             modules: 21,
             module_px: 8,
@@ -247,6 +253,7 @@ impl PatternSettings {
                 .map(|pattern| {
                     let pattern = pattern
                         .with_code_layout(self.code_layout)
+                        .with_code_packing(self.code_packing)
                         .with_lfsr_offset(self.lfsr_offset)
                         .with_corner_radius(self.effective_corner_radius());
                     let plain = self.plain_checkerboard;
@@ -328,6 +335,7 @@ impl PatternSettings {
                 .map(|pattern| {
                     let pattern = pattern
                         .with_code_layout(self.code_layout)
+                        .with_code_packing(self.code_packing)
                         .with_lfsr_offset(self.lfsr_offset)
                         .with_supersample(self.supersample)
                         .with_corner_radius(self.effective_corner_radius());
@@ -366,13 +374,35 @@ impl PatternSettings {
             }
             PatternKind::Checkerboard => {
                 let code_len = (1u64 << self.order) - 1;
-                // CELL (3) squares per code bit, as in the megarena.
-                let range_squares = 3 * code_len;
+                let packing = self.code_packing;
+                // One supercell edge per bit under OneBit, half of one under
+                // TwoBits — that ratio is the whole point of the packing.
+                let range_squares = packing.cell() as u64 * code_len;
                 let mut rows = vec![
                     ("Code length".into(), format!("{code_len} bits (2^{} − 1)", self.order)),
                     // The carriers run diagonally, so a fringe is a√2 apart —
                     // this, not the square side, is what a detector is told.
                     ("Carrier period".into(), format!("{:.2} px", self.carrier_period_px())),
+                    (
+                        "Squares per bit".into(),
+                        format!(
+                            "{:.1} ({cell}×{cell} supercell, {bits} per axis)",
+                            packing.squares_per_bit(),
+                            cell = packing.cell(),
+                            bits = if packing.bits_per_cell() == 1 { "1 bit" } else { "2 bits" },
+                        ),
+                    ),
+                    // What a decoder actually has to see: the window is `order`
+                    // bits wide, so this is the field of view the packing buys.
+                    (
+                        "Decode window".into(),
+                        format!(
+                            "{:.0} sq ({:.0} px) for {} bits",
+                            self.order as Real * packing.squares_per_bit(),
+                            self.order as Real * packing.squares_per_bit() * self.square_px,
+                            self.order,
+                        ),
+                    ),
                     ("Absolute range".into(), format!("{range_squares} sq ({:.0} px)", range_squares as Real * self.square_px)),
                     ("Squares across width".into(), format!("{:.2}", self.width as Real / self.square_px)),
                 ];
@@ -413,10 +443,17 @@ impl PatternSettings {
                 self.period_px, self.order, self.lfsr_offset
             ),
             PatternKind::Checkerboard => format!(
-                "Checkerboard::new({:.3}, {})\n    .unwrap()\n    .with_code_layout(CodeLayout::{:?})\n    .with_lfsr_offset({})\n    .with_supersample({}){}",
+                "Checkerboard::new({:.3}, {})\n    .unwrap()\n    .with_code_layout(CodeLayout::{:?}){}\n    .with_lfsr_offset({})\n    .with_supersample({}){}",
                 self.square_px,
                 self.order,
                 self.code_layout,
+                // One bit per supercell is the default, so the call is only
+                // worth showing when it would actually change the render.
+                if self.code_packing == CodePacking::OneBit {
+                    String::new()
+                } else {
+                    format!("\n    .with_code_packing(CodePacking::{:?})", self.code_packing)
+                },
                 self.lfsr_offset,
                 self.supersample,
                 // Square corners are the default, so the call is only worth
@@ -448,8 +485,9 @@ impl PatternSettings {
             PatternKind::Periodic => format!("periodic_p{:.0}", self.period_px),
             PatternKind::Megarena => format!("megarena_p{:.0}_n{}", self.period_px, self.order),
             PatternKind::Checkerboard => format!(
-                "checkerboard{}{}_a{:.0}_n{}",
+                "checkerboard{}{}{}_a{:.0}_n{}",
                 if self.plain_checkerboard { "_plain" } else { "" },
+                if self.code_packing == CodePacking::OneBit { "" } else { "_2b" },
                 if self.rounded_corners {
                     format!("_r{:.0}", self.corner_radius * 100.0)
                 } else {
