@@ -113,21 +113,10 @@ pub fn grey_levels(data: &[f32], log: bool) -> Vec<u8> {
         .collect()
 }
 
-/// Cyclic colour for a wrapped phase, so the 2π wrap reads as a seam rather
-/// than a cliff from white to black.
-fn phase_colour(radians: f32) -> [u8; 3] {
+/// One wrapped phase as a level, `−π` to `π` over the full range.
+fn phase_level(radians: f32) -> u8 {
     let turn = (radians as f64 / std::f64::consts::TAU).rem_euclid(1.0);
-    let sector = (turn * 6.0).floor();
-    let f = turn * 6.0 - sector;
-    let (r, g, b) = match sector as i32 % 6 {
-        0 => (1.0, f, 0.0),
-        1 => (1.0 - f, 1.0, 0.0),
-        2 => (0.0, 1.0, f),
-        3 => (0.0, 1.0 - f, 1.0),
-        4 => (f, 0.0, 1.0),
-        _ => (1.0, 0.0, 1.0 - f),
-    };
-    [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
+    (turn * 255.0).clamp(0.0, 255.0) as u8
 }
 
 /// Paints a square scalar stage onto the canvas with the given id.
@@ -140,26 +129,53 @@ pub fn paint_grey(id: &str, size: usize, data: &[f32], log: bool) -> Result<(), 
     paint_to(id, size, size, &rgba)
 }
 
-/// Paints both wrapped phases into one panel, direction 1 above direction 2,
-/// each decimated two to one vertically to fit.
-pub fn paint_phases(
+/// Paints both wrapped phases into one full-resolution image, one per colour
+/// channel: direction 1 in red, direction 2 in green.
+///
+/// The two phases live on the same pixels, so splitting them by channel shows
+/// them where they actually are — each channel keeps its own sawtooth, and the
+/// lattice their sum makes (yellow corners, red and green fringes crossing)
+/// is the pattern's own grid, drawn by the measurement rather than over it.
+pub fn paint_phase_channels(
     id: &str,
     size: usize,
     first: &[f32],
     second: &[f32],
 ) -> Result<(), String> {
-    let half = size / 2;
     let mut rgba = Vec::with_capacity(size * size * 4);
-    for row in 0..size {
-        let (source, source_row) =
-            if row < half { (first, row * 2) } else { (second, (row - half) * 2) };
-        for col in 0..size {
-            let value = source[source_row.min(size - 1) * size + col];
-            let [r, g, b] = phase_colour(value);
-            rgba.extend_from_slice(&[r, g, b, 255]);
-        }
+    for pixel in 0..size * size {
+        rgba.extend_from_slice(&[
+            phase_level(first[pixel]),
+            phase_level(second[pixel]),
+            0,
+            255,
+        ]);
     }
     paint_to(id, size, size, &rgba)
+}
+
+/// Colour of a thumbnail cell no square landed in. Distinct from a black
+/// square, which is a measurement and not padding.
+const THUMBNAIL_PADDING: [u8; 4] = [20, 24, 33, 255];
+
+/// Paints an extracted thumbnail one pixel per pattern square. The CSS scales
+/// it up with `image-rendering: pixelated`, so a square stays a square.
+pub fn paint_thumbnail(
+    id: &str,
+    side: usize,
+    levels: &[u8],
+    present: &[bool],
+) -> Result<(), String> {
+    let mut rgba = Vec::with_capacity(side * side * 4);
+    for cell in 0..side * side {
+        if present[cell] {
+            let level = levels[cell];
+            rgba.extend_from_slice(&[level, level, level, 255]);
+        } else {
+            rgba.extend_from_slice(&THUMBNAIL_PADDING);
+        }
+    }
+    paint_to(id, side, side, &rgba)
 }
 
 /// Blanks a stage, for when there is nothing to show in it.

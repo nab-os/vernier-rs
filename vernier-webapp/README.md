@@ -53,17 +53,26 @@ The header switches between them, and they share the pattern selection.
 **Spectrum explorer** puts a virtual camera in front of that pattern and shows
 every stage the detector passes through as you move it:
 
-    camera image -> FFT -> peak selection -> band-pass -> reconstruction -> phases
+    camera image -> FFT and peak selection -> band-pass -> reconstruction
+      -> wrapped phases -> extracted thumbnail
 
 Drag the camera image: left to translate, right to rotate about Z and change
 distance, middle to tilt out of plane, the wheel for distance, shift for finer
-motion. The detector is the library itself — `vernier-spectral` and
-`vernier-cpu` compiled to WebAssembly — running in the page, with no server.
+motion. The detector is the library itself — `vernier-spectral`,
+`vernier-pose` and `vernier-cpu` compiled to WebAssembly — running in the
+page, with no server.
 
-Two things worth knowing:
+Three things worth knowing:
 
 - **Stamp** and **QR-like** are stubs with no layout to sample at a pose, so the
   explorer refuses them. The other three work.
+- The **extracted thumbnail** is the coded checkerboard's square model, so that
+  panel only fills for the checkerboard. Every square the decoder sampled
+  becomes one thumbnail pixel — which is what dewarps it, so a tilted camera
+  still gives a square-on grid — and the squares whose colour breaks the
+  checkerboard parity are ringed: those are the coding sites, and the readouts
+  say what they decoded to. A frame too small to hold `order` bits says so
+  instead of guessing.
 - **Log scale on the FFT panels** is on by default: a coded pattern's carrier
   peaks stand orders of magnitude above its sidebands, so a linear ramp shows
   two white dots on black. Linear is the honest view of the magnitudes.
@@ -155,6 +164,7 @@ rasterizers, this app picks them up with no change here.
 | `src/main.rs` | the app shell, the view switch, and the per-generator field lists |
 | `src/camera.rs` | the explorer's six-freedom pose and its projection |
 | `src/spectral.rs` | one pass of the detector, keeping every stage |
+| `src/coding.rs` | the decoder's squares, arranged into a drawable thumbnail |
 | `src/explorer.rs` | the explorer view |
 
 Adding a parameter means a field on `PatternSettings`, an arm in

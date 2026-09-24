@@ -9,6 +9,7 @@
 
 mod camera;
 mod canvas;
+mod coding;
 mod controls;
 mod explorer;
 #[cfg(test)]

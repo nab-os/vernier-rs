@@ -12,7 +12,7 @@
 use vernier_core::buffer::BufferLayout;
 use vernier_core::{Complex32, ComputeBackend, ComputeJob, Real, Result};
 use vernier_spectral::planefit::{PhasePlane, fit_plane_to_unwrapped};
-use vernier_spectral::spectrum::REGRESSION_CROP_FACTOR;
+use vernier_spectral::spectrum::{Detection, DirectionResult, REGRESSION_CROP_FACTOR};
 use vernier_spectral::unwrap::quarters_unwrap_phase;
 
 /// Everything one pass produces, in the order the pipeline produces it.
@@ -28,9 +28,37 @@ pub struct Stages {
     /// Wrapped phase of each direction, as the planes saw it.
     pub phase1: Vec<f32>,
     pub phase2: Vec<f32>,
+    /// The same maps unwrapped: what the plane fit was given, and what the
+    /// square indexing downstream needs to know which period it is in.
+    pub unwrapped1: Vec<Real>,
+    pub unwrapped2: Vec<Real>,
     /// Peak positions in centred spectrum coordinates, in bins from the middle.
     pub peaks: [(Real, Real); 2],
+    /// The same peaks as raw FFT bins, which is what a [`Detection`] carries.
+    pub peak_bins: [(usize, usize); 2],
     pub planes: [PhasePlane; 2],
+}
+
+impl Stages {
+    /// Packs this pass into the [`Detection`] the decoders take, so the code
+    /// extraction can be handed the very same object `vernier_spectral::
+    /// spectrum::analyze_two` would give it — this module being a
+    /// stage-keeping copy of that function, the two agree by construction.
+    pub fn detection(&self, size: usize) -> Detection {
+        let direction = |plane: PhasePlane, peak_bin: (usize, usize)| DirectionResult {
+            plane,
+            peak: plane.peak_location(size, size),
+            peak_bin,
+        };
+        Detection {
+            dir1: direction(self.planes[0], self.peak_bins[0]),
+            dir2: direction(self.planes[1], self.peak_bins[1]),
+            phase1: self.unwrapped1.clone(),
+            phase2: self.unwrapped2.clone(),
+            width: size,
+            height: size,
+        }
+    }
 }
 
 /// Wraps a frequency index into the signed offset from DC that display and
@@ -155,7 +183,10 @@ pub fn run<B: ComputeBackend>(
         reconstruction,
         phase1: wrapped1.iter().map(|&v| v as f32).collect(),
         phase2: wrapped2.iter().map(|&v| v as f32).collect(),
+        unwrapped1,
+        unwrapped2,
         peaks,
+        peak_bins: bins,
         planes,
     }))
 }

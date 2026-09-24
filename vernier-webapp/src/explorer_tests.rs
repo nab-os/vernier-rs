@@ -159,3 +159,59 @@ fn the_log_scale_lifts_the_spectrum_off_the_floor() {
     assert!(linear <= 2, "a linear ramp should leave most of it black, got {linear}");
     assert!(log >= 20, "the log should lift the bulk clear of black, got {log}");
 }
+
+/// The thumbnail panel has to stay pinned to the chain that feeds it: the
+/// squares come out of the same detection the phases do, so the lattice it
+/// draws must be the one the carrier period implies, and the sites it rings
+/// must be the ones the decoder called sites.
+#[test]
+fn the_thumbnail_lattice_matches_the_carrier() {
+    let size = 256;
+    let pattern = settings_for(PatternKind::Checkerboard);
+    let view = view_for(&pattern, size);
+    let sampler = pattern.sampler().expect("the checkerboard has a point sampler");
+    let image = camera::render(&sampler, &view.pose, view.size, view.supersample);
+    let stages = analyse_with(&pattern, &view).expect("two carrier peaks are found");
+
+    let thumbnail = crate::coding::Thumbnail::extract(
+        &stages.detection(size),
+        image.as_slice(),
+        pattern.order,
+        pattern.code_layout,
+    )
+    .expect("the frame is full of squares");
+
+    // One cell per square: the side has to match the frame divided by the
+    // square as the camera magnifies it, give or take the edges.
+    let square_px = pattern.carrier_period_px() / std::f64::consts::SQRT_2
+        * view.pose.magnification();
+    let expected = size as Real / square_px;
+    assert!(
+        (thumbnail.side as Real - expected).abs() <= 3.0,
+        "a {} cell thumbnail for a lattice of about {expected:.1} squares",
+        thumbnail.side
+    );
+
+    assert_eq!(thumbnail.levels.len(), thumbnail.side * thumbnail.side);
+    assert_eq!(thumbnail.present.len(), thumbnail.side * thumbnail.side);
+    assert!(
+        thumbnail.present.iter().filter(|&&p| p).count() == thumbnail.sampled,
+        "every sampled square gets exactly one cell"
+    );
+    assert!(thumbnail.binarized <= thumbnail.sampled);
+
+    // Every ring lands on a cell that holds a square, and inside the canvas.
+    assert!(!thumbnail.sites.is_empty(), "a coded pattern has coding sites");
+    for site in &thumbnail.sites {
+        assert!(site.col < thumbnail.side && site.row < thumbnail.side);
+        assert!(
+            thumbnail.present[site.row * thumbnail.side + site.col],
+            "a site was ringed on padding"
+        );
+    }
+
+    // And the centre crosshair stays inside the canvas it is drawn on.
+    let (cx, cy) = thumbnail.centre;
+    assert!((0.0..thumbnail.side as f64).contains(&cx));
+    assert!((0.0..thumbnail.side as f64).contains(&cy));
+}

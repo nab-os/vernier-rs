@@ -557,6 +557,24 @@ code {
     pointer-events: none;
 }
 
+/* Said over the panel rather than instead of it, so the grid keeps its shape
+   when one stage has nothing to show. */
+.panel-note {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 1.2rem;
+    text-align: center;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: #8a8a8a;
+    background: rgba(10, 10, 12, 0.72);
+    pointer-events: none;
+}
+
 .panel-canvas.is-draggable .drag-surface {
     cursor: grab;
     /* The wheel and the drag belong to the camera, not to the page. */
