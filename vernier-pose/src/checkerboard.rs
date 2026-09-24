@@ -44,7 +44,7 @@ const TRANSFORMS: [[i64; 4]; 4] = [
     [0, 1, -1, 0],  // −90°
 ];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CheckerboardCode {
     /// Index into `TRANSFORMS`.
     pub transform: usize,
@@ -217,6 +217,118 @@ pub fn extract_code_with_layout(
         return Err(CheckerboardError::AmbiguousPosition);
     }
     Ok(best)
+}
+
+// ─── Diagnostic API ──────────────────────────────────────────────────────────
+
+/// One square as the decoder saw it, for anything that wants to show the
+/// extraction rather than just its answer.
+#[derive(Clone, Copy, Debug)]
+pub struct SquareReadout {
+    /// Square index in the measured frame — the frame the phases define, before
+    /// any rotation hypothesis puts it back in the pattern's own.
+    pub i: i64,
+    pub j: i64,
+    /// Mean image intensity over the centre of the square.
+    pub mean: Real,
+    /// Colour after the local threshold. `None` for squares [`binarize`] drops
+    /// for want of samples or contrast.
+    pub is_white: Option<bool>,
+    /// Whether the square breaks the checkerboard parity, which is what makes
+    /// it a coding site. `None` wherever `is_white` is.
+    pub is_coding_site: Option<bool>,
+}
+
+/// The square-level stages of the decode, kept instead of discarded: the
+/// dewarped thumbnail, the binarization, and the coding sites read out of it.
+///
+/// This is a view of steps 1–3 in the module header, run exactly as
+/// [`extract_code_with_layout`] runs them. `code` is that function's own answer
+/// on the same detection, so a caller can show the sites and what they decoded
+/// to side by side.
+#[derive(Clone, Debug)]
+pub struct CodingReadout {
+    /// Every square with at least one sample, in `(i, j)` order.
+    pub squares: Vec<SquareReadout>,
+    /// Inclusive bounds of the sampled lattice, as `(min, max)`.
+    pub i_range: (i64, i64),
+    pub j_range: (i64, i64),
+    /// Square under the image centre, with the sub-square part kept.
+    pub centre: (Real, Real),
+    /// What the full decode made of it.
+    pub code: Result<CheckerboardCode, CheckerboardError>,
+}
+
+/// Samples the squares, binarizes them and marks the coding sites, without
+/// committing to an orientation.
+///
+/// Returns `None` when the phases yield no square at all — an empty image, or a
+/// detection so far off that nothing lands inside a sampling radius.
+pub fn read_squares(
+    detection: &Detection,
+    intensity: &[f32],
+    order: u32,
+    layout: CodeLayout,
+) -> Option<CodingReadout> {
+    let sign2 = handedness(detection);
+    let samples = accumulate_squares(
+        &detection.phase1,
+        &detection.phase2,
+        sign2,
+        intensity,
+        detection.width,
+        detection.height,
+    );
+    if samples.is_empty() {
+        return None;
+    }
+    let white = binarize(&samples);
+
+    // The identity transform: the measured frame is the one the thumbnail is
+    // drawn in, so the defects are marked where the squares actually are. Only
+    // the parity choice matters here, and `build_defect_map` makes that by
+    // majority — independent of which quarter-turn the code later turns out to
+    // need.
+    let map = build_defect_map(&white, &TRANSFORMS[0]);
+    let defects: BTreeMap<(i64, i64), bool> = map
+        .squares
+        .iter()
+        .map(|&((i, j), defect)| ((i - map.parity_shift, j), defect))
+        .collect();
+
+    let squares: Vec<SquareReadout> = samples
+        .iter()
+        .map(|(&(i, j), &(sum, count))| SquareReadout {
+            i,
+            j,
+            mean: sum / count as Real,
+            is_white: white.get(&(i, j)).copied(),
+            is_coding_site: defects.get(&(i, j)).copied(),
+        })
+        .collect();
+
+    let (i_min, i_max) = squares
+        .iter()
+        .fold((i64::MAX, i64::MIN), |(lo, hi), s| (lo.min(s.i), hi.max(s.i)));
+    let (j_min, j_max) = squares
+        .iter()
+        .fold((i64::MAX, i64::MIN), |(lo, hi), s| (lo.min(s.j), hi.max(s.j)));
+
+    let centre_pixel = (detection.height / 2) * detection.width + detection.width / 2;
+    let snap = |fitted: Real, measured: Real| fitted + TAU * ((measured - fitted) / TAU).round();
+    let phase1 = snap(detection.dir1.plane.c, detection.phase1[centre_pixel]);
+    let phase2 = sign2 * snap(detection.dir2.plane.c, detection.phase2[centre_pixel]);
+
+    Some(CodingReadout {
+        squares,
+        i_range: (i_min, i_max),
+        j_range: (j_min, j_max),
+        centre: (
+            (phase1 / PI + phase2 / PI) * 0.5,
+            (phase1 / PI - phase2 / PI) * 0.5,
+        ),
+        code: extract_code_with_layout(detection, intensity, order, layout),
+    })
 }
 
 fn stronger(a: &CheckerboardCode, b: &CheckerboardCode) -> bool {

@@ -1,10 +1,13 @@
+use std::collections::BTreeMap;
+
 use vernier_core::Complex32;
 use vernier_core::buffer::BufferLayout;
 use vernier_cpu::CpuBackend;
 use vernier_patterns::PatternPose;
 use vernier_patterns::checkerboard::{Checkerboard, CodeLayout};
 use vernier_pose::checkerboard::{
-    CheckerboardError, detect_checkerboard, extract_code, solve_checkerboard_with_layout,
+    CheckerboardError, detect_checkerboard, extract_code, read_squares,
+    solve_checkerboard_with_layout,
 };
 use vernier_spectral::spectrum::analyze_two;
 
@@ -95,4 +98,95 @@ fn refuses_a_subharmonic_lock() {
             Err(CheckerboardError::SubharmonicLock)
         ));
     }
+}
+
+/// The diagnostic readout has to describe the same extraction the decode runs
+/// on, not an approximation of it.
+///
+/// The code inverts one square per axis in each 3x3 supercell, so a correct
+/// readout marks coding sites in exactly two residue classes and nowhere else,
+/// and within a class every supercell is all-or-nothing: one bit governs a
+/// whole band of sites, so a band either breaks parity throughout or not at
+/// all. A rate check would pass on a readout that were merely plausible; this
+/// only passes on one that is right.
+#[test]
+fn reports_the_squares_the_decode_reads() {
+    let pattern = Checkerboard::new(SQUARE, ORDER).unwrap();
+    let pose = PatternPose::new(137.0, -62.0, 0.21);
+    let image = pattern.render(SIZE, SIZE, &pose);
+    let buffer = BufferLayout::packed(SIZE, SIZE);
+    let detection =
+        detect_checkerboard(&CpuBackend::new(), image.as_slice(), buffer, 4.0, 10, 0, 0.0).unwrap();
+
+    let readout = read_squares(&detection, image.as_slice(), ORDER, CodeLayout::Squares)
+        .expect("the frame is full of squares");
+
+    // 512 px of 8 px squares is a 64-square lattice, and every node is a square.
+    assert!(
+        readout.squares.len() > 4000,
+        "only {} squares sampled",
+        readout.squares.len()
+    );
+    for square in &readout.squares {
+        assert!(square.i >= readout.i_range.0 && square.i <= readout.i_range.1);
+        assert!(square.j >= readout.j_range.0 && square.j <= readout.j_range.1);
+        // A square is only called a coding site once it has a colour.
+        assert_eq!(square.is_white.is_some(), square.is_coding_site.is_some());
+    }
+
+    // Sites per residue class, and per supercell band within a class.
+    let mut per_class: BTreeMap<(i64, i64), (usize, usize)> = BTreeMap::new();
+    for square in &readout.squares {
+        let Some(is_site) = square.is_coding_site else { continue };
+        let entry = per_class
+            .entry((square.i.rem_euclid(3), square.j.rem_euclid(3)))
+            .or_default();
+        entry.0 += usize::from(is_site);
+        entry.1 += 1;
+    }
+    let coding: Vec<(i64, i64)> = per_class
+        .iter()
+        .filter(|&(_, &(sites, _))| sites > 0)
+        .map(|(&class, _)| class)
+        .collect();
+    assert_eq!(
+        coding.len(),
+        2,
+        "the code writes two sites per supercell, but sites landed in {per_class:?}"
+    );
+
+    // The x code varies with i and the y code with j, so one class must be
+    // banded along i and the other along j.
+    let banded = |class: (i64, i64), along_i: bool| {
+        let mut bands: BTreeMap<i64, (usize, usize)> = BTreeMap::new();
+        for square in &readout.squares {
+            let Some(is_site) = square.is_coding_site else { continue };
+            if (square.i.rem_euclid(3), square.j.rem_euclid(3)) != class {
+                continue;
+            }
+            let band = if along_i { square.i } else { square.j }.div_euclid(3);
+            let entry = bands.entry(band).or_default();
+            entry.0 += usize::from(is_site);
+            entry.1 += 1;
+        }
+        let mixed = bands.values().filter(|&&(s, n)| s != 0 && s != n).count();
+        (bands.len(), mixed)
+    };
+    for &class in &coding {
+        let (i_bands, i_mixed) = banded(class, true);
+        let (j_bands, j_mixed) = banded(class, false);
+        assert!(i_bands > 10 && j_bands > 10, "too few bands to judge {class:?}");
+        assert!(
+            i_mixed == 0 || j_mixed == 0,
+            "class {class:?} is banded along neither axis: \
+             {i_mixed} mixed of {i_bands} along i, {j_mixed} of {j_bands} along j"
+        );
+    }
+
+    // And the diagnostic's own decode agrees with the decode proper.
+    let direct = extract_code(&detection, image.as_slice(), ORDER).unwrap();
+    let via_readout = readout.code.expect("the same code, read the same way");
+    assert_eq!(direct.centre_square, via_readout.centre_square);
+    assert_eq!(direct.x_window, via_readout.x_window);
+    assert_eq!(direct.y_window, via_readout.y_window);
 }

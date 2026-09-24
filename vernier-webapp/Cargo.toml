@@ -17,6 +17,9 @@ vernier-patterns = { path = "../vernier-patterns" }
 # spectral chain both compile to wasm32 unchanged.
 vernier-cpu = { path = "../vernier-cpu" }
 vernier-spectral = { path = "../vernier-spectral" }
+# The code extraction too: the thumbnail panel shows the decoder's own square
+# sampling and its own coding sites, not a lookalike redrawn from the phases.
+vernier-pose = { path = "../vernier-pose" }
 nalgebra = "0.35.0"
 
 dioxus = { version = "0.7.10", features = ["web"] }
