@@ -181,6 +181,7 @@ fn the_thumbnail_lattice_matches_the_carrier() {
             PatternKind::Checkerboard => crate::coding::Source::Checkerboard {
                 order: pattern.order,
                 layout: pattern.code_layout,
+                packing: pattern.code_packing,
             },
             _ => crate::coding::Source::Megarena { order: pattern.order },
         };

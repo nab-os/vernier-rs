@@ -2,17 +2,18 @@
 //! of the phase maps, and the coding sites it reads off it.
 //!
 //! Both coded patterns get here, by different routes. The checkerboard writes
-//! its bits by inverting squares, so `vernier_pose::checkerboard::read_squares`
-//! hands back squares and which of them break the parity. The megarena writes
+//! its bits by inverting squares, so
+//! `vernier_pose::checkerboard::read_squares_with_packing` hands back squares
+//! and which of them break the parity. The megarena writes
 //! its bits by removing dots, so `vernier_pose::absolute::read_cells` hands back
 //! carrier cells and which of them carry a bit. Neither is recomputed here:
 //! this module only arranges what they return into a canvas-shaped grid, one
 //! pixel per lattice node, so the panel can draw it.
 
 use vernier_core::Real;
-use vernier_patterns::checkerboard::CodeLayout;
+use vernier_patterns::checkerboard::{CodeLayout, CodePacking};
 use vernier_pose::absolute::{CellRole, read_cells};
-use vernier_pose::checkerboard::read_squares;
+use vernier_pose::checkerboard::read_squares_with_packing;
 use vernier_spectral::spectrum::Detection;
 
 /// Past this many markers the overlay stops being a picture and starts being a
@@ -22,7 +23,7 @@ const MAX_SITES: usize = 3000;
 /// Which decoder to run, and what it needs.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Source {
-    Checkerboard { order: u32, layout: CodeLayout },
+    Checkerboard { order: u32, layout: CodeLayout, packing: CodePacking },
     Megarena { order: u32 },
 }
 
@@ -168,8 +169,8 @@ impl Thumbnail {
     /// complete megarena cell.
     pub fn extract(detection: &Detection, intensity: &[f32], source: Source) -> Option<Self> {
         match source {
-            Source::Checkerboard { order, layout } => {
-                Self::from_squares(detection, intensity, order, layout)
+            Source::Checkerboard { order, layout, packing } => {
+                Self::from_squares(detection, intensity, order, layout, packing)
             }
             Source::Megarena { order } => Self::from_cells(detection, intensity, order),
         }
@@ -184,8 +185,9 @@ impl Thumbnail {
         intensity: &[f32],
         order: u32,
         layout: CodeLayout,
+        packing: CodePacking,
     ) -> Option<Self> {
-        let readout = read_squares(detection, intensity, order, layout)?;
+        let readout = read_squares_with_packing(detection, intensity, order, layout, packing)?;
         let grid = Grid::new(readout.i_range, readout.j_range);
 
         let nodes: Vec<(i64, i64, Real)> = readout

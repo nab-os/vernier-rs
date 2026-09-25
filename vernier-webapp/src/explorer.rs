@@ -544,6 +544,7 @@ fn coding_source(pattern: &PatternSettings) -> Option<Source> {
         PatternKind::Checkerboard => Some(Source::Checkerboard {
             order: pattern.order,
             layout: pattern.code_layout,
+            packing: pattern.code_packing,
         }),
         PatternKind::Megarena => Some(Source::Megarena { order: pattern.order }),
         PatternKind::Periodic | PatternKind::Stamp | PatternKind::QrLike => None,

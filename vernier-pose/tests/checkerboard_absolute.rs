@@ -4,10 +4,11 @@ use vernier_core::Complex32;
 use vernier_core::buffer::BufferLayout;
 use vernier_cpu::CpuBackend;
 use vernier_patterns::PatternPose;
-use vernier_patterns::checkerboard::{Checkerboard, CodeLayout};
+use vernier_patterns::checkerboard::{Checkerboard, CodeLayout, CodePacking};
 use vernier_pose::checkerboard::{
-    CheckerboardError, detect_checkerboard, extract_code, read_squares,
-    solve_checkerboard_with_layout,
+    CheckerboardError, detect_checkerboard, detect_checkerboard_with_packing, extract_code,
+    extract_code_with_packing, read_squares, read_squares_with_packing,
+    solve_checkerboard_with_packing,
 };
 use vernier_spectral::spectrum::analyze_two;
 
@@ -33,10 +34,16 @@ fn random_poses(seed: u64, n: usize) -> Vec<PatternPose> {
 fn solve(pattern: &Checkerboard, pose: &PatternPose) -> vernier_core::Pose {
     let image = pattern.render(SIZE, SIZE, pose);
     let buffer = BufferLayout::packed(SIZE, SIZE);
-    let detection = detect_checkerboard(&CpuBackend::new(), image.as_slice(), buffer, 4.0, 10, 0, 0.0).unwrap();
-    solve_checkerboard_with_layout(&detection, image.as_slice(), SQUARE, ORDER, pattern.code_layout())
-        .unwrap_or_else(|e| panic!("{:?} at {pose:?}: {e}", pattern.code_layout()))
-        .0
+    let packing = pattern.code_packing();
+    let detection = detect_checkerboard_with_packing(
+        &CpuBackend::new(), image.as_slice(), buffer, 4.0, 10, 0, 0.0, packing,
+    )
+    .unwrap();
+    solve_checkerboard_with_packing(
+        &detection, image.as_slice(), SQUARE, ORDER, pattern.code_layout(), packing,
+    )
+    .unwrap_or_else(|e| panic!("{:?}/{packing:?} at {pose:?}: {e}", pattern.code_layout()))
+    .0
 }
 
 fn position_error(pattern: &Checkerboard, pose: &PatternPose) -> f64 {
@@ -98,6 +105,32 @@ fn refuses_a_subharmonic_lock() {
             Err(CheckerboardError::SubharmonicLock)
         ));
     }
+}
+
+/// The same round trip on the denser packing: two bits per supercell means the
+/// decoder has to lift each run's position by its slot parity, not just by the
+/// LFSR index, or it lands half a supercell out.
+#[test]
+fn decodes_random_poses_with_two_bit_packing() {
+    for layout in LAYOUTS {
+        let pattern = Checkerboard::new(SQUARE, ORDER)
+            .unwrap()
+            .with_code_layout(layout)
+            .with_code_packing(CodePacking::TwoBits);
+        for pose in random_poses(0x2545_f491_4f6c_dd1d, 24) {
+            let error = position_error(&pattern, &pose);
+            assert!(error < 0.25, "{layout:?} at {pose:?}: {error:.3} px");
+        }
+    }
+}
+
+/// The denser packing must reach further for the same order: its supercell is
+/// bigger, so one sequence spans more squares.
+#[test]
+fn two_bit_packing_reaches_further() {
+    let one = Checkerboard::new(SQUARE, ORDER).unwrap();
+    let two = one.clone().with_code_packing(CodePacking::TwoBits);
+    assert!(two.range_squares() > one.range_squares());
 }
 
 /// The diagnostic readout has to describe the same extraction the decode runs
@@ -185,6 +218,56 @@ fn reports_the_squares_the_decode_reads() {
 
     // And the diagnostic's own decode agrees with the decode proper.
     let direct = extract_code(&detection, image.as_slice(), ORDER).unwrap();
+    let via_readout = readout.code.expect("the same code, read the same way");
+    assert_eq!(direct.centre_square, via_readout.centre_square);
+    assert_eq!(direct.x_window, via_readout.x_window);
+    assert_eq!(direct.y_window, via_readout.y_window);
+}
+
+/// The readout must follow the decode onto the denser packing, not read the
+/// pattern as if it were the 3x3 one.
+#[test]
+fn reports_the_squares_the_two_bit_decode_reads() {
+    let pattern = Checkerboard::new(SQUARE, ORDER)
+        .unwrap()
+        .with_code_packing(CodePacking::TwoBits);
+    let pose = PatternPose::new(137.0, -62.0, 0.21);
+    let image = pattern.render(SIZE, SIZE, &pose);
+    let buffer = BufferLayout::packed(SIZE, SIZE);
+    let detection = detect_checkerboard_with_packing(
+        &CpuBackend::new(), image.as_slice(), buffer, 4.0, 10, 0, 0.0, CodePacking::TwoBits,
+    )
+    .unwrap();
+
+    let readout = read_squares_with_packing(
+        &detection, image.as_slice(), ORDER, CodeLayout::Squares, CodePacking::TwoBits,
+    )
+    .expect("the frame is full of squares");
+
+    // Two bits per axis, so sites fall in four residue classes mod 5. Site
+    // marking ignores the packing; the decode below is what exercises it.
+    let cell = CodePacking::TwoBits.cell();
+    let expected =
+        CodePacking::TwoBits.x_sites().len() + CodePacking::TwoBits.y_sites().len();
+    let mut per_class: BTreeMap<(i64, i64), usize> = BTreeMap::new();
+    for square in &readout.squares {
+        if square.is_coding_site == Some(true) {
+            *per_class
+                .entry((square.i.rem_euclid(cell), square.j.rem_euclid(cell)))
+                .or_default() += 1;
+        }
+    }
+    assert_eq!(
+        per_class.len(),
+        expected,
+        "the denser code writes {expected} sites per {cell}x{cell} supercell, \
+         but sites landed in {per_class:?}"
+    );
+
+    let direct = extract_code_with_packing(
+        &detection, image.as_slice(), ORDER, CodeLayout::Squares, CodePacking::TwoBits,
+    )
+    .unwrap();
     let via_readout = readout.code.expect("the same code, read the same way");
     assert_eq!(direct.centre_square, via_readout.centre_square);
     assert_eq!(direct.x_window, via_readout.x_window);
